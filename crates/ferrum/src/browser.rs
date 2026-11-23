@@ -522,7 +522,18 @@ impl WebViewDelegate for Browser {
         self.refresh_if_active(&webview);
     }
 
-    fn notify_load_status_changed(&self, webview: WebView, _status: LoadStatus) {
+    fn notify_load_status_changed(&self, webview: WebView, status: LoadStatus) {
+        if status == LoadStatus::Complete {
+            // Solo el dominio, nunca la URL completa, ni siquiera en depuración.
+            let host = webview
+                .url()
+                .and_then(|url| url.host_str().map(str::to_owned))
+                .unwrap_or_default();
+            log::debug!(
+                "Página cargada: {host} (bloqueados en la sesión: {})",
+                self.shield.stats().total_blocked()
+            );
+        }
         self.refresh_if_active(&webview);
     }
 

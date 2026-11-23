@@ -6,6 +6,7 @@
 
 use std::rc::Rc;
 
+use ferrum_shield::omnibox;
 use ferrum_shield::{Category, Shield, ShieldConfig};
 use servo::DevicePoint;
 use servo::{
@@ -103,11 +104,14 @@ impl App {
             config.search.clone(),
         );
 
-        match config.initial_input.as_deref() {
-            Some(input) => {
-                browser.open_tab(pages::start_url());
-                browser.navigate(input);
-            },
+        // La URL inicial se pasa al crear la pestaña: cargarla justo después
+        // fallaría porque el contexto de navegación aún no existe.
+        let initial_url = config
+            .initial_input
+            .as_deref()
+            .and_then(|input| omnibox::resolve(input, &config.search));
+        match initial_url {
+            Some(url) => browser.open_tab(url),
             None => {
                 browser.open_tab(pages::start_url());
                 browser.begin_address_edit();

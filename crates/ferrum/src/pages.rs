@@ -194,7 +194,9 @@ mod tests {
 
     #[test]
     fn escapes_js() {
-        assert_eq!(js_string_escape(r#"a"b\c</script>"#), r#"a\"b\\c</script>"#);
+        let escaped = js_string_escape(r#"a"b\c</script>"#);
+        assert_eq!(escaped, "a\\\"b\\\\c\\u003C/script\\u003E");
+        assert!(!escaped.contains('<') && !escaped.contains('>'));
     }
 
     #[test]
