@@ -1,0 +1,18 @@
+# Compilación
+/target/
+**/*.rs.bk
+*.pdb
+
+# Editores y sistema
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Configuración local de herramientas
+.claude/settings.local.json
+
+# Listas de bloqueo personales (no se suben al repositorio)
+/lists/local/

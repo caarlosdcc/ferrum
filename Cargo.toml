@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["crates/ferrum-shield", "crates/ferrum"]
+default-members = ["crates/ferrum"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+rust-version = "1.88"
+authors = ["Ferrum contributors"]
+repository = "https://github.com/caarlosdcc/ferrum"
+
+[workspace.dependencies]
+ferrum-shield = { path = "crates/ferrum-shield" }
+url = "2.5"
+log = "0.4"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+unwrap_used = "warn"
+
+# Compilaciones de desarrollo: nuestro código compila rápido, pero las
+# dependencias (Servo es enorme) se optimizan para que el navegador sea usable.
+[profile.dev.package."*"]
+opt-level = 2
+
+# Binario de distribución: más pequeño y rápido, a cambio de compilar más lento.
+#   cargo build --profile production
+[profile.production]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+strip = true

@@ -1,0 +1,39 @@
+[package]
+name = "ferrum"
+description = "Navegador web ligero, seguro y privado construido en Rust sobre Servo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+ferrum-shield.workspace = true
+url.workspace = true
+log.workspace = true
+
+# Motor web. Sin las funciones por defecto para no compilar el servidor de
+# devtools (un puerto de depuración remota = superficie de ataque).
+# WebGL, WebGPU y WebXR quedan fuera a propósito: menos huella digital
+# (fingerprinting) y menos código expuesto a la web.
+servo = { version = "0.8", default-features = false, features = [
+    "bundled",
+    "clipboard",
+    "js_jit",
+    "multiprocess",
+] }
+
+# Estas versiones deben coincidir con las que usa Servo, porque sus tipos
+# aparecen en la API pública de Servo.
+winit = "0.30"
+euclid = "0.22"
+dpi = "0.1"
+keyboard-types = "0.8"
+http = "1"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+arboard = "3"
+
+[lints]
+workspace = true
