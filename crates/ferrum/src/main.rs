@@ -10,6 +10,7 @@
 mod app;
 mod browser;
 mod config;
+mod gui;
 mod hardening;
 mod input;
 mod pages;
