@@ -2,12 +2,21 @@
 resolver = "3"
 members = ["crates/ferrum-shield", "crates/ferrum"]
 default-members = ["crates/ferrum"]
+# Código de terceros con arreglos propios: no se formatea ni se revisa con
+# nuestras reglas.
+exclude = ["third_party"]
+
+# egui 0.37 dibuja el texto con vello_cpu suponiendo un solo hilo, pero Servo
+# activa el modo multihilo de vello_cpu. Copia de epaint con el arreglo: ver
+# third_party/epaint/FERRUM.md.
+[patch.crates-io]
+epaint = { path = "third_party/epaint" }
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "MPL-2.0"
-rust-version = "1.88"
+rust-version = "1.95"
 authors = ["Ferrum contributors"]
 repository = "https://github.com/caarlosdcc/ferrum"
 

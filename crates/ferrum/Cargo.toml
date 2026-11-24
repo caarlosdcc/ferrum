@@ -33,7 +33,15 @@ dpi = "0.1"
 keyboard-types = "0.8"
 http = "1"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
-arboard = "3"
+
+# Interfaz (pestañas, barra de direcciones, menús). Se dibuja en Rust, fuera del
+# motor web: ninguna página puede leerla, taparla ni falsificarla.
+# `glow` debe ser la misma versión que usa Servo para compartir el contexto OpenGL.
+# `monochrome_emoji_fonts` trae los iconos de la barra (⬅ ➡ 🔄 🏠 🔒 🛡).
+egui = { version = "0.37", default-features = false, features = ["monochrome_emoji_fonts"] }
+egui_glow = { version = "0.37", features = ["winit", "clipboard"] }
+# Diálogo nativo del sistema para subir archivos (`<input type=file>`).
+rfd = "0.18"
 
 [lints]
 workspace = true

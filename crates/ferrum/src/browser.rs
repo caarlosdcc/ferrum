@@ -2,8 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! El navegador: pestañas, barra de direcciones y la conexión entre Servo y el
-//! escudo de privacidad.
+//! El navegador: pestañas, navegación y la conexión entre Servo y el escudo de
+//! privacidad.
 //!
 //! Toda petición de red pasa por [`Browser::filter_request`] antes de salir del
 //! equipo. Ahí se decide si se bloquea, se limpia o se deja pasar.
@@ -18,17 +18,19 @@ use ferrum_shield::{Shield, Verdict};
 use http::header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, REFERRER_POLICY};
 use http::{HeaderMap, HeaderValue, Method, StatusCode};
 use servo::{
-    ConsoleLogLevel, CreateNewWebViewRequest, Cursor, DeviceIndependentPixel, DevicePixel,
-    EmbedderControl, LoadStatus, NavigationRequest, PermissionRequest, RenderingContext, Servo,
-    SimpleDialog, UserContentManager, UserScript, WebResourceLoad, WebResourceResponse, WebView,
-    WebViewBuilder, WebViewDelegate, WindowRenderingContext,
+    ColorPicker, ConsoleLogLevel, CreateNewWebViewRequest, Cursor, DeviceIndependentPixel,
+    DeviceIntRect, DevicePixel, EmbedderControl, EmbedderControlId, FilePicker, Image, LoadStatus,
+    NavigationRequest, OffscreenRenderingContext, PermissionRequest, RenderingContext,
+    SelectElement, Servo, SimpleDialog, UserContentManager, UserScript, WebResourceLoad,
+    WebResourceResponse, WebView, WebViewBuilder, WebViewDelegate, WebViewId,
+    WindowRenderingContext,
 };
 use url::Url;
 use winit::dpi::PhysicalSize;
-use winit::window::Window;
+use winit::window::{CursorIcon, Window};
 
-use crate::input;
-use crate::pages;
+use crate::gui::{self, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
+use crate::{input, pages};
 
 /// Script anti-huella digital inyectado en cada página.
 const PRIVACY_SCRIPT: &str = include_str!("../resources/privacy.js");
@@ -37,28 +39,90 @@ const PRIVACY_SCRIPT: &str = include_str!("../resources/privacy.js");
 /// tecla del usuario. Así se bloquean los pop-ups y pop-unders automáticos.
 const POPUP_GESTURE_WINDOW: Duration = Duration::from_millis(1500);
 
-/// Cuánto tiempo se muestra en el título un mensaje de `alert()`.
+/// Cuánto tiempo se muestra el mensaje de un `alert()`.
 const PAGE_MESSAGE_DURATION: Duration = Duration::from_secs(8);
 
-/// Texto que el usuario está escribiendo en la barra de direcciones.
-#[derive(Debug, Default)]
-pub struct AddressBar {
-    pub text: String,
-    /// La primera tecla reemplaza el texto (como si estuviera seleccionado).
-    pub replace_on_type: bool,
+/// Lo que la interfaz necesita saber de cada pestaña.
+#[derive(Clone, Debug)]
+pub struct TabInfo {
+    pub id: WebViewId,
+    pub title: String,
+    pub loading: bool,
+}
+
+/// Tipo de conexión de la página activa, para el indicador de la barra.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Location {
+    Secure,
+    Insecure,
+    Internal,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct NavigationState {
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
+    pub has_page: bool,
+    pub location: Location,
+}
+
+/// Control de formulario que la página pidió mostrar y que la interfaz dibuja
+/// encima de ella.
+pub enum PageControl {
+    Select(SelectElement),
+    Color {
+        picker: ColorPicker,
+        color: egui::Color32,
+    },
+}
+
+impl PageControl {
+    fn id(&self) -> EmbedderControlId {
+        match self {
+            PageControl::Select(select) => select.id(),
+            PageControl::Color { picker, .. } => picker.id(),
+        }
+    }
+
+    /// Zona que ocupa en la página el elemento que abrió el control.
+    pub fn position(&self) -> DeviceIntRect {
+        match self {
+            PageControl::Select(select) => select.position(),
+            PageControl::Color { picker, .. } => picker.position(),
+        }
+    }
+
+    /// Envía a la página lo que eligió el usuario.
+    pub fn submit(self) {
+        match self {
+            PageControl::Select(select) => select.submit(),
+            PageControl::Color { mut picker, color } => {
+                picker.select(Some(gui::color_to_rgb(color)));
+                picker.submit();
+            },
+        }
+    }
 }
 
 pub struct Browser {
     me: Weak<Browser>,
     window: Window,
     servo: Servo,
+    /// Contexto de la ventana, donde se dibujan la interfaz y la página.
     rendering_context: Rc<WindowRenderingContext>,
+    /// Búfer donde Servo pinta las páginas, que luego se copia bajo la barra.
+    offscreen: Rc<OffscreenRenderingContext>,
+    viewport_size: Cell<PhysicalSize<u32>>,
     user_content: Rc<UserContentManager>,
     shield: Shield,
     search: SearchEngine,
     tabs: RefCell<Vec<WebView>>,
     active: Cell<usize>,
-    address_bar: RefCell<Option<AddressBar>>,
+    control: RefCell<Option<(WebViewId, PageControl)>>,
+    file_picker: RefCell<Option<FilePicker>>,
+    favicon_changes: RefCell<Vec<WebViewId>>,
+    page_cursor: Cell<Option<CursorIcon>>,
     page_message: RefCell<Option<(String, Instant)>>,
     last_gesture: Cell<Option<Instant>>,
     /// Última URL limpiada, para no entrar en bucle si el servidor insiste en
@@ -79,17 +143,25 @@ impl Browser {
         let user_content = Rc::new(UserContentManager::new(&servo));
         user_content.add_script(Rc::new(UserScript::new(PRIVACY_SCRIPT.to_owned(), None)));
 
+        let viewport_size = initial_viewport_size(&window);
+        let offscreen = Rc::new(rendering_context.offscreen_context(viewport_size));
+
         Rc::new_cyclic(|me| Browser {
             me: me.clone(),
             window,
             servo,
             rendering_context,
+            offscreen,
+            viewport_size: Cell::new(viewport_size),
             user_content,
             shield,
             search,
             tabs: RefCell::default(),
             active: Cell::new(0),
-            address_bar: RefCell::default(),
+            control: RefCell::default(),
+            file_picker: RefCell::default(),
+            favicon_changes: RefCell::default(),
+            page_cursor: Cell::new(Some(CursorIcon::Default)),
             page_message: RefCell::default(),
             last_gesture: Cell::new(None),
             last_cleaned: RefCell::default(),
@@ -102,8 +174,28 @@ impl Browser {
         &self.servo
     }
 
+    pub fn window(&self) -> &Window {
+        &self.window
+    }
+
+    pub fn rendering_context(&self) -> &WindowRenderingContext {
+        &self.rendering_context
+    }
+
+    pub fn offscreen(&self) -> &OffscreenRenderingContext {
+        &self.offscreen
+    }
+
     pub fn exit_requested(&self) -> bool {
         self.exit_requested.get()
+    }
+
+    pub fn search_engine_name(&self) -> &str {
+        self.search.name
+    }
+
+    pub fn blocked_count(&self) -> u64 {
+        self.shield.stats().total_blocked() + self.popups_blocked.get()
     }
 
     fn delegate(&self) -> Rc<dyn WebViewDelegate> {
@@ -121,7 +213,7 @@ impl Browser {
     // ------------------------------------------------------------------
 
     pub fn open_tab(&self, url: Url) {
-        let webview = WebViewBuilder::new(&self.servo, self.rendering_context.clone())
+        let webview = WebViewBuilder::new(&self.servo, self.offscreen.clone())
             .url(url)
             .hidpi_scale_factor(self.scale())
             .delegate(self.delegate())
@@ -143,12 +235,21 @@ impl Browser {
         self.tabs.borrow().get(self.active.get()).cloned()
     }
 
+    pub fn active_index(&self) -> usize {
+        self.active.get()
+    }
+
+    pub fn active_page_loaded(&self) -> bool {
+        self.active_webview()
+            .is_some_and(|webview| webview.load_status() == LoadStatus::Complete)
+    }
+
     fn is_active(&self, webview: &WebView) -> bool {
         self.active_webview()
             .is_some_and(|active| active == *webview)
     }
 
-    fn activate(&self, index: usize) {
+    pub fn activate(&self, index: usize) {
         // Copia de los manejadores (son `Rc`): no mantenemos el préstamo de
         // `tabs` mientras llamamos a Servo.
         let tabs: Vec<WebView> = self.tabs.borrow().clone();
@@ -164,7 +265,7 @@ impl Browser {
         }
         target.show();
         target.set_focused(true);
-        target.resize(self.window.inner_size());
+        target.resize(self.viewport_size.get());
         self.update_title();
         self.window.request_redraw();
     }
@@ -173,7 +274,7 @@ impl Browser {
         self.close_tab(self.active.get());
     }
 
-    fn close_tab(&self, index: usize) {
+    pub fn close_tab(&self, index: usize) {
         let (removed, remaining) = {
             let mut tabs = self.tabs.borrow_mut();
             if index >= tabs.len() {
@@ -217,6 +318,18 @@ impl Browser {
         self.activate(next);
     }
 
+    pub fn tab_infos(&self) -> Vec<TabInfo> {
+        self.tabs
+            .borrow()
+            .iter()
+            .map(|webview| TabInfo {
+                id: webview.id(),
+                title: tab_title(webview),
+                loading: is_loading(webview),
+            })
+            .collect()
+    }
+
     // ------------------------------------------------------------------
     // Navegación
     // ------------------------------------------------------------------
@@ -229,6 +342,13 @@ impl Browser {
         match self.active_webview() {
             Some(webview) => webview.load(url),
             None => self.open_tab(url),
+        }
+    }
+
+    pub fn home(&self) {
+        match self.active_webview() {
+            Some(webview) => webview.load(pages::start_url()),
+            None => self.open_tab(pages::start_url()),
         }
     }
 
@@ -257,23 +377,54 @@ impl Browser {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Ventana
-    // ------------------------------------------------------------------
-
-    pub fn paint(&self) {
-        if let Some(webview) = self.active_webview() {
-            webview.paint();
-            self.rendering_context.present();
+    pub fn navigation_state(&self) -> NavigationState {
+        let webview = self.active_webview();
+        let url = webview.as_ref().and_then(WebView::url);
+        NavigationState {
+            can_go_back: webview.as_ref().is_some_and(WebView::can_go_back),
+            can_go_forward: webview.as_ref().is_some_and(WebView::can_go_forward),
+            has_page: webview.is_some(),
+            location: url.as_ref().map_or(Location::Internal, location_of),
         }
     }
 
-    pub fn resize(&self, size: PhysicalSize<u32>) {
-        // Todas las pestañas comparten el contexto de dibujo: redimensionar
-        // una las redimensiona todas.
+    /// Texto que muestra la barra de direcciones cuando no se está editando.
+    pub fn display_url(&self) -> String {
+        self.active_webview()
+            .and_then(|webview| webview.url())
+            .map(|url| display_url_of(&url))
+            .unwrap_or_default()
+    }
+
+    // ------------------------------------------------------------------
+    // Ventana y dibujo
+    // ------------------------------------------------------------------
+
+    /// Servo pinta la pestaña activa en su búfer. La interfaz la copia después.
+    pub fn paint_page(&self) {
+        if let Some(webview) = self.active_webview() {
+            webview.paint();
+        }
+    }
+
+    pub fn resize_window(&self, size: PhysicalSize<u32>) {
+        if size.width > 0 && size.height > 0 {
+            self.rendering_context.resize(size);
+        }
+        self.window.request_redraw();
+    }
+
+    /// Ajusta las páginas al hueco que deja la interfaz.
+    pub fn resize_viewport(&self, size: PhysicalSize<u32>) {
+        if size == self.viewport_size.get() {
+            return;
+        }
+        self.viewport_size.set(size);
+        // Todas las pestañas comparten el búfer: redimensionar una basta.
         if let Some(webview) = self.active_webview() {
             webview.resize(size);
         }
+        self.window.request_redraw();
     }
 
     pub fn set_scale_factor(&self, scale_factor: f64) {
@@ -287,156 +438,138 @@ impl Browser {
         self.last_gesture.set(Some(Instant::now()));
     }
 
-    // ------------------------------------------------------------------
-    // Barra de direcciones (se muestra en el título de la ventana)
-    // ------------------------------------------------------------------
-
-    pub fn is_editing_address(&self) -> bool {
-        self.address_bar.borrow().is_some()
-    }
-
-    pub fn begin_address_edit(&self) {
-        let current = self
-            .active_webview()
-            .and_then(|webview| webview.url())
-            .filter(|url| !pages::is_internal(url))
-            .map(String::from)
-            .unwrap_or_default();
-        *self.address_bar.borrow_mut() = Some(AddressBar {
-            replace_on_type: !current.is_empty(),
-            text: current,
-        });
-        self.update_title();
-    }
-
-    pub fn address_type(&self, text: &str) {
-        if let Some(bar) = self.address_bar.borrow_mut().as_mut() {
-            if bar.replace_on_type {
-                bar.text.clear();
-                bar.replace_on_type = false;
-            }
-            bar.text.extend(text.chars().filter(|c| !c.is_control()));
+    /// Vuelve a poner el cursor que pidió la página (al entrar el ratón en ella).
+    pub fn apply_page_cursor(&self) {
+        match self.page_cursor.get() {
+            Some(icon) => {
+                self.window.set_cursor_visible(true);
+                self.window.set_cursor(icon);
+            },
+            None => self.window.set_cursor_visible(false),
         }
-        self.update_title();
-    }
-
-    pub fn address_backspace(&self) {
-        if let Some(bar) = self.address_bar.borrow_mut().as_mut() {
-            if bar.replace_on_type {
-                bar.text.clear();
-                bar.replace_on_type = false;
-            } else {
-                bar.text.pop();
-            }
-        }
-        self.update_title();
-    }
-
-    pub fn address_select_all(&self) {
-        if let Some(bar) = self.address_bar.borrow_mut().as_mut() {
-            bar.replace_on_type = !bar.text.is_empty();
-        }
-        self.update_title();
-    }
-
-    pub fn address_paste(&self) {
-        let text = arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text());
-        match text {
-            Ok(text) => self.address_type(&text.replace(['\r', '\n'], " ")),
-            Err(error) => log::warn!("No se pudo leer el portapapeles: {error}"),
-        }
-    }
-
-    pub fn commit_address(&self) {
-        let bar = self.address_bar.borrow_mut().take();
-        if let Some(bar) = bar {
-            self.navigate(&bar.text);
-        }
-        self.update_title();
-    }
-
-    pub fn cancel_address(&self) {
-        self.address_bar.borrow_mut().take();
-        self.update_title();
     }
 
     // ------------------------------------------------------------------
-    // Título
+    // Controles que pide la página
+    // ------------------------------------------------------------------
+
+    /// Saca el control abierto de la pestaña activa para dibujarlo. Si era de
+    /// otra pestaña, se cancela.
+    pub fn take_control(&self) -> Option<PageControl> {
+        let (webview_id, control) = self.control.borrow_mut().take()?;
+        let active = self.active_webview().map(|webview| webview.id());
+        (active == Some(webview_id)).then_some(control)
+    }
+
+    pub fn put_back_control(&self, control: PageControl) {
+        if let Some(webview) = self.active_webview() {
+            *self.control.borrow_mut() = Some((webview.id(), control));
+        }
+    }
+
+    /// Abre el diálogo del sistema para subir archivos, si una página lo pidió.
+    /// Se llama fuera de los avisos de Servo para no bloquearlo a medias.
+    pub fn run_file_picker(&self) {
+        let Some(mut picker) = self.file_picker.borrow_mut().take() else {
+            return;
+        };
+        let extensions: Vec<String> = picker
+            .filter_patterns()
+            .iter()
+            .map(|pattern| pattern.0.trim().trim_start_matches('.').to_owned())
+            .filter(|ext| !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric()))
+            .collect();
+
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Elegir archivo para subir")
+            .set_parent(&self.window);
+        if !extensions.is_empty() {
+            dialog = dialog.add_filter("Archivos que acepta la página", &extensions);
+        }
+        let paths = if picker.allow_select_multiple() {
+            dialog.pick_files()
+        } else {
+            dialog.pick_file().map(|path| vec![path])
+        };
+        match paths {
+            Some(paths) => {
+                // Solo cuántos, nunca qué archivos: los nombres son privados.
+                log::info!("{} archivo(s) elegidos para subir", paths.len());
+                picker.select(&paths);
+                picker.submit();
+            },
+            None => picker.dismiss(),
+        }
+        self.window.request_redraw();
+    }
+
+    /// Iconos de pestaña que cambiaron desde la última vez.
+    pub fn take_favicon_changes(&self) -> Vec<(WebViewId, Option<Image>)> {
+        let changed = std::mem::take(&mut *self.favicon_changes.borrow_mut());
+        let tabs = self.tabs.borrow();
+        changed
+            .into_iter()
+            .filter_map(|id| {
+                let webview = tabs.iter().find(|webview| webview.id() == id)?;
+                Some((id, webview.favicon().map(|image| image.clone())))
+            })
+            .collect()
+    }
+
+    // ------------------------------------------------------------------
+    // Mensajes y título
     // ------------------------------------------------------------------
 
     fn show_page_message(&self, message: &str) {
-        *self.page_message.borrow_mut() = Some((sanitize(message, 80), Instant::now()));
-        self.update_title();
+        *self.page_message.borrow_mut() = Some((sanitize(message, 120), Instant::now()));
+        self.window.request_redraw();
     }
 
-    pub fn update_title(&self) {
-        let title = match self.address_bar.borrow().as_ref() {
-            Some(bar) => {
-                let text = if bar.replace_on_type {
-                    format!("[{}]", bar.text)
-                } else {
-                    format!("{}▏", bar.text)
-                };
-                format!("🔎 {text}    (Enter: ir · Esc: cancelar)")
+    pub fn page_message(&self) -> Option<String> {
+        let mut slot = self.page_message.borrow_mut();
+        match slot.as_ref() {
+            Some((message, shown_at)) if shown_at.elapsed() < PAGE_MESSAGE_DURATION => {
+                Some(message.clone())
             },
-            None => self.status_title(),
+            Some(_) => {
+                slot.take();
+                None
+            },
+            None => None,
+        }
+    }
+
+    pub fn page_message_remaining(&self) -> Option<Duration> {
+        let slot = self.page_message.borrow();
+        let (_, shown_at) = slot.as_ref()?;
+        PAGE_MESSAGE_DURATION.checked_sub(shown_at.elapsed())
+    }
+
+    pub fn dismiss_message(&self) {
+        self.page_message.borrow_mut().take();
+        self.window.request_redraw();
+    }
+
+    /// El título de la ventana (barra de tareas, Alt+Tab): solo el de la página.
+    pub fn update_title(&self) {
+        let page_title = self
+            .active_webview()
+            .and_then(|webview| webview.page_title())
+            .map(|title| sanitize(&title, 80))
+            .filter(|title| !title.is_empty());
+        let title = match page_title {
+            Some(page_title) => format!("{page_title} — Ferrum"),
+            None => "Ferrum".to_owned(),
         };
         self.window.set_title(&title);
     }
 
-    fn status_title(&self) -> String {
-        let mut title = String::new();
-
-        if let Some(webview) = self.active_webview() {
-            // La ubicación va primero y fuera del control de la página: un
-            // título malicioso no puede empujarla ni suplantarla.
-            let location = webview
-                .url()
-                .map_or_else(String::new, |url| describe_location(&url));
-            title.push_str(&location);
-            if matches!(
-                webview.load_status(),
-                LoadStatus::Started | LoadStatus::HeadParsed
-            ) {
-                title.push_str(" ⏳");
-            }
-            if let Some(page_title) = webview
-                .page_title()
-                .map(|t| sanitize(&t, 60))
-                .filter(|t| !t.is_empty())
-            {
-                title.push_str(" — ");
-                title.push_str(&page_title);
-            }
-        }
-
-        let message = self.page_message.borrow().clone();
-        if let Some((message, shown_at)) = message {
-            if shown_at.elapsed() < PAGE_MESSAGE_DURATION {
-                title.push_str(&format!(" · 💬 La página dice: «{message}»"));
-            } else {
-                self.page_message.borrow_mut().take();
-            }
-        }
-
-        let stats = self.shield.stats();
-        title.push_str(&format!(
-            " · 🛡 {}",
-            stats.total_blocked() + self.popups_blocked.get()
-        ));
-
-        let tabs = self.tabs.borrow().len();
-        if tabs > 1 {
-            title.push_str(&format!(" · pestaña {}/{tabs}", self.active.get() + 1));
-        }
-        title.push_str(" — Ferrum");
-        title
-    }
-
-    fn refresh_if_active(&self, webview: &WebView) {
-        if self.is_active(webview) && !self.is_editing_address() {
+    /// Algo cambió en una pestaña: redibujar la interfaz.
+    fn refresh(&self, webview: &WebView) {
+        if self.is_active(webview) {
             self.update_title();
         }
+        self.window.request_redraw();
     }
 
     // ------------------------------------------------------------------
@@ -450,7 +583,7 @@ impl Browser {
         if request.is_for_main_frame {
             let is_get = request.method == Method::GET;
             self.filter_document(load, url, is_get);
-            self.refresh_if_active(webview);
+            self.refresh(webview);
             return;
         }
 
@@ -464,7 +597,7 @@ impl Browser {
         if let Verdict::Block(reason) = self.shield.check_subresource(&url, top_level.as_ref()) {
             log::debug!("Bloqueado ({}): {}", reason.code(), reason.detail());
             cancel(load, url);
-            self.refresh_if_active(webview);
+            self.refresh(webview);
         }
     }
 
@@ -515,11 +648,11 @@ impl WebViewDelegate for Browser {
     }
 
     fn notify_url_changed(&self, webview: WebView, _url: Url) {
-        self.refresh_if_active(&webview);
+        self.refresh(&webview);
     }
 
     fn notify_page_title_changed(&self, webview: WebView, _title: Option<String>) {
-        self.refresh_if_active(&webview);
+        self.refresh(&webview);
     }
 
     fn notify_load_status_changed(&self, webview: WebView, status: LoadStatus) {
@@ -534,20 +667,20 @@ impl WebViewDelegate for Browser {
                 self.shield.stats().total_blocked()
             );
         }
-        self.refresh_if_active(&webview);
+        self.refresh(&webview);
+    }
+
+    fn notify_favicon_changed(&self, webview: WebView) {
+        self.favicon_changes.borrow_mut().push(webview.id());
+        self.window.request_redraw();
     }
 
     fn notify_cursor_changed(&self, webview: WebView, cursor: Cursor) {
         if !self.is_active(&webview) {
             return;
         }
-        match input::cursor_icon(cursor) {
-            Some(icon) => {
-                self.window.set_cursor_visible(true);
-                self.window.set_cursor(icon);
-            },
-            None => self.window.set_cursor_visible(false),
-        }
+        self.page_cursor.set(input::cursor_icon(cursor));
+        self.apply_page_cursor();
     }
 
     fn notify_closed(&self, webview: WebView) {
@@ -579,11 +712,11 @@ impl WebViewDelegate for Browser {
         if !user_initiated {
             log::info!("Ventana emergente bloqueada");
             self.popups_blocked.set(self.popups_blocked.get() + 1);
-            self.update_title();
+            self.window.request_redraw();
             return;
         }
         let webview = request
-            .builder(self.rendering_context.clone())
+            .builder(self.offscreen.clone())
             .hidpi_scale_factor(self.scale())
             .delegate(self.delegate())
             .user_content_manager(self.user_content.clone())
@@ -597,11 +730,12 @@ impl WebViewDelegate for Browser {
         request.deny();
     }
 
-    fn show_embedder_control(&self, _webview: WebView, control: EmbedderControl) {
+    fn show_embedder_control(&self, webview: WebView, control: EmbedderControl) {
+        log::debug!("La página pide un control: {}", control_kind(&control));
         match control {
-            // alert/confirm/prompt: se muestran en el título, claramente marcados
-            // como texto de la página, y se cierran solos. Así una web no puede
-            // bloquearte con diálogos en bucle ("¡Tu PC está infectado!").
+            // alert/confirm/prompt: se muestran en una franja marcada como texto
+            // de la página y se cierran solos. Así una web no puede bloquearte con
+            // diálogos en bucle ("¡Tu PC está infectado!").
             EmbedderControl::SimpleDialog(dialog) => match dialog {
                 SimpleDialog::Alert(alert) => {
                     self.show_page_message(alert.message());
@@ -616,10 +750,36 @@ impl WebViewDelegate for Browser {
                     prompt.dismiss();
                 },
             },
-            EmbedderControl::ContextMenu(menu) => menu.dismiss(),
-            // Subir archivos queda deshabilitado en esta versión.
+            EmbedderControl::SelectElement(select) => {
+                *self.control.borrow_mut() = Some((webview.id(), PageControl::Select(select)));
+                self.window.request_redraw();
+            },
+            EmbedderControl::ColorPicker(picker) => {
+                let color = gui::rgb_to_color(picker.current_color());
+                *self.control.borrow_mut() =
+                    Some((webview.id(), PageControl::Color { picker, color }));
+                self.window.request_redraw();
+            },
+            // Solo la pestaña activa puede pedir archivos, y siempre tras un
+            // clic del usuario en el formulario.
+            EmbedderControl::FilePicker(picker) if self.is_active(&webview) => {
+                *self.file_picker.borrow_mut() = Some(picker);
+            },
             EmbedderControl::FilePicker(picker) => picker.dismiss(),
-            _ => {},
+            EmbedderControl::ContextMenu(menu) => menu.dismiss(),
+            EmbedderControl::InputMethod(_) => {},
+        }
+    }
+
+    fn hide_embedder_control(&self, _webview: WebView, control_id: EmbedderControlId) {
+        log::debug!("La página cierra su control");
+        let mut slot = self.control.borrow_mut();
+        if slot
+            .as_ref()
+            .is_some_and(|(_, control)| control.id() == control_id)
+        {
+            slot.take();
+            self.window.request_redraw();
         }
     }
 
@@ -632,20 +792,67 @@ impl WebViewDelegate for Browser {
     }
 }
 
-/// Describe la ubicación para el título: candado + dominio.
-/// Los dominios internacionales se muestran en punycode (`xn--…`) para que un
-/// dominio que imita a otro con letras de otro alfabeto no pase desapercibido.
-fn describe_location(url: &Url) -> String {
+fn control_kind(control: &EmbedderControl) -> &'static str {
+    match control {
+        EmbedderControl::SelectElement(_) => "lista desplegable",
+        EmbedderControl::ColorPicker(_) => "selector de color",
+        EmbedderControl::FilePicker(_) => "subir archivo",
+        EmbedderControl::InputMethod(_) => "método de entrada",
+        EmbedderControl::SimpleDialog(_) => "diálogo",
+        EmbedderControl::ContextMenu(_) => "menú contextual",
+    }
+}
+
+/// Tamaño de la página antes del primer dibujo: la ventana menos la interfaz.
+fn initial_viewport_size(window: &Window) -> PhysicalSize<u32> {
+    let size = window.inner_size();
+    let chrome = ((TAB_BAR_HEIGHT + TOOLBAR_HEIGHT) * window.scale_factor() as f32).round() as u32;
+    PhysicalSize::new(size.width.max(1), size.height.saturating_sub(chrome).max(1))
+}
+
+fn is_loading(webview: &WebView) -> bool {
+    matches!(
+        webview.load_status(),
+        LoadStatus::Started | LoadStatus::HeadParsed
+    )
+}
+
+/// Título de la pestaña: el de la página, o el dominio mientras no hay título.
+fn tab_title(webview: &WebView) -> String {
+    let url = webview.url();
+    if url.as_ref().is_some_and(pages::is_internal) {
+        return "Nueva pestaña".to_owned();
+    }
+    if let Some(title) = webview
+        .page_title()
+        .map(|title| sanitize(&title, 60))
+        .filter(|title| !title.is_empty())
+    {
+        return title;
+    }
+    url.and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| "Cargando…".to_owned())
+}
+
+fn location_of(url: &Url) -> Location {
     if pages::is_internal(url) {
-        return "ferrum://inicio".to_owned();
+        return Location::Internal;
     }
-    let host = url.host_str().unwrap_or_default();
     match url.scheme() {
-        "https" => format!("🔒 {host}"),
-        "http" => format!("⚠ {host} (sin cifrar)"),
-        "about" | "data" | "blob" => url.scheme().to_owned() + ":",
-        other => format!("{other}://{host}"),
+        "https" => Location::Secure,
+        "http" => Location::Insecure,
+        _ => Location::Other,
     }
+}
+
+/// La dirección tal y como se muestra. Los dominios internacionales salen en
+/// punycode (`xn--…`) para que uno que imita a otro con letras de otro alfabeto
+/// no pase desapercibido.
+fn display_url_of(url: &Url) -> String {
+    if pages::is_internal(url) {
+        return String::new();
+    }
+    sanitize(url.as_str(), 2048)
 }
 
 /// Limpia texto controlado por la web antes de mostrarlo en la interfaz:
@@ -708,10 +915,17 @@ mod tests {
     }
 
     #[test]
-    fn location_shows_lock_and_punycode() {
+    fn address_shows_punycode() {
         let url = Url::parse("https://аpple.com/").expect("url");
-        assert!(describe_location(&url).starts_with("🔒 xn--"));
-        let url = Url::parse("http://example.com/").expect("url");
-        assert_eq!(describe_location(&url), "⚠ example.com (sin cifrar)");
+        assert!(display_url_of(&url).starts_with("https://xn--"));
+        assert_eq!(location_of(&url), Location::Secure);
+    }
+
+    #[test]
+    fn location_kinds() {
+        let http = Url::parse("http://example.com/").expect("url");
+        assert_eq!(location_of(&http), Location::Insecure);
+        assert_eq!(location_of(&pages::start_url()), Location::Internal);
+        assert_eq!(display_url_of(&pages::start_url()), "");
     }
 }

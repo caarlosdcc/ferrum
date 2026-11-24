@@ -29,11 +29,17 @@ OPCIONES:
     --search <ddg|mojeek> Buscador de la barra de direcciones (por defecto: ddg).
     --proxy <URL>         Envía todo el tráfico por un proxy HTTP, p. ej.
                           http://127.0.0.1:8080 (SOCKS aún no está soportado).
+    --screenshot <ARCHIVO.png>
+                          Guarda una captura de la ventana cuando la página termina
+                          de cargar y se cierra. Pensado para pruebas automáticas.
+    --click <X,Y>         Con --screenshot: antes de la captura, hace clic en ese
+                          punto de la página (en píxeles), p. ej. para abrir una
+                          lista desplegable.
     -h, --help            Muestra esta ayuda.
     -V, --version         Muestra la versión.
 
 ATAJOS:
-    Ctrl+L / F6     Escribir dirección o búsqueda (se muestra en la barra de título)
+    Ctrl+L / F6     Ir a la barra de direcciones
     Ctrl+T          Nueva pestaña          Ctrl+W      Cerrar pestaña
     Ctrl+Tab        Pestaña siguiente      Ctrl+Mayús+Tab  Anterior
     Alt+← / Alt+→   Atrás / Adelante       F5 / Ctrl+R Recargar
@@ -48,6 +54,8 @@ pub struct Config {
     pub malware_lists: Vec<PathBuf>,
     pub search: SearchEngine,
     pub proxy: Option<String>,
+    pub screenshot: Option<PathBuf>,
+    pub click: Option<(f32, f32)>,
     pub initial_input: Option<String>,
 }
 
@@ -89,6 +97,8 @@ impl Config {
                     }
                 },
                 "--proxy" => config.proxy = Some(value("--proxy")?),
+                "--screenshot" => config.screenshot = Some(value("--screenshot")?.into()),
+                "--click" => config.click = Some(parse_point(&value("--click")?)?),
                 flag if flag.starts_with('-') => {
                     return Err(format!("opción desconocida: {flag}\n\n{HELP}"));
                 },
@@ -103,6 +113,18 @@ impl Config {
 
         Ok(ParseOutcome::Run(config))
     }
+}
+
+/// `"120,45"` → `(120.0, 45.0)`.
+fn parse_point(text: &str) -> Result<(f32, f32), String> {
+    let invalid = || format!("punto no válido: {text} (formato: X,Y)");
+    let (x, y) = text.split_once(',').ok_or_else(invalid)?;
+    let x: f32 = x.trim().parse().map_err(|_| invalid())?;
+    let y: f32 = y.trim().parse().map_err(|_| invalid())?;
+    if !(x.is_finite() && y.is_finite() && x >= 0.0 && y >= 0.0) {
+        return Err(invalid());
+    }
+    Ok((x, y))
 }
 
 #[cfg(test)]
@@ -126,6 +148,7 @@ mod tests {
         assert!(!config.strict);
         assert!(!config.multiprocess);
         assert!(config.proxy.is_none());
+        assert!(config.screenshot.is_none());
         assert_eq!(config.search.name, "DuckDuckGo");
     }
 
@@ -158,6 +181,14 @@ mod tests {
         assert!(parse(&["--inventado"]).is_err());
         assert!(parse(&["--blocklist"]).is_err());
         assert!(parse(&["--search", "google"]).is_err());
+    }
+
+    #[test]
+    fn parses_test_click() {
+        let config = run(&["--screenshot", "a.png", "--click", "200, 130"]);
+        assert_eq!(config.click, Some((200.0, 130.0)));
+        assert!(parse(&["--click", "200"]).is_err());
+        assert!(parse(&["--click", "-1,5"]).is_err());
     }
 
     #[test]
