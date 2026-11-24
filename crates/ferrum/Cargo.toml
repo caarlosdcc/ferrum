@@ -18,11 +18,14 @@ log.workspace = true
 # devtools (un puerto de depuración remota = superficie de ataque).
 # WebGL, WebGPU y WebXR quedan fuera a propósito: menos huella digital
 # (fingerprinting) y menos código expuesto a la web.
+# `subtlecrypto` (Web Crypto, `crypto.subtle`) sí entra: sin él fallan inicios
+# de sesión, llaves de acceso y apps con cifrado. Usa RustCrypto y aws-lc-rs.
 servo = { version = "0.8", default-features = false, features = [
     "bundled",
     "clipboard",
     "js_jit",
     "multiprocess",
+    "subtlecrypto",
 ] }
 
 # Estas versiones deben coincidir con las que usa Servo, porque sus tipos
