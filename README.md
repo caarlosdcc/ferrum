@@ -50,6 +50,9 @@ Ser honestos con lo que **no** hace es parte de la seguridad:
 
 - **Compatibilidad.** Servo es un motor joven: algunos sitios complejos se ven
   mal o no funcionan. Mejora cada mes.
+- **Sin vídeo ni audio.** La compilación aún no incluye el reproductor
+  multimedia (GStreamer): YouTube y cualquier `<video>` o `<audio>` no se
+  reproducen. Tampoco hay DRM, así que Netflix o Spotify no funcionarán.
 - **Interfaz sencilla.** Hay pestañas, barra de herramientas, barra de
   direcciones, listas desplegables, selector de color y subida de archivos. Aún
   no hay descargas, marcadores, historial ni menú de clic derecho.
@@ -183,6 +186,8 @@ iframes) con la lista de rastreadores, salvo que sean del propio sitio.
 
 - [x] Barra de herramientas gráfica (egui) con pestañas visibles
 - [x] Desplegables `<select>`, selector de color y subida de archivos
+- [x] Web Crypto (`crypto.subtle`) para inicios de sesión y apps cifradas
+- [ ] Reproducción de vídeo y audio
 - [ ] Menú de clic derecho y diálogos propios
 - [ ] Panel del escudo: qué se bloqueó y excepciones por sitio
 - [ ] Descargas con cuarentena y verificación
