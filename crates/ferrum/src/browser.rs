@@ -64,6 +64,7 @@ pub struct NavigationState {
     pub can_go_back: bool,
     pub can_go_forward: bool,
     pub has_page: bool,
+    pub loading: bool,
     pub location: Location,
 }
 
@@ -188,6 +189,10 @@ impl Browser {
 
     pub fn exit_requested(&self) -> bool {
         self.exit_requested.get()
+    }
+
+    pub fn request_exit(&self) {
+        self.exit_requested.set(true);
     }
 
     pub fn search_engine_name(&self) -> &str {
@@ -384,6 +389,7 @@ impl Browser {
             can_go_back: webview.as_ref().is_some_and(WebView::can_go_back),
             can_go_forward: webview.as_ref().is_some_and(WebView::can_go_forward),
             has_page: webview.is_some(),
+            loading: webview.as_ref().is_some_and(is_loading),
             location: url.as_ref().map_or(Location::Internal, location_of),
         }
     }
@@ -603,7 +609,7 @@ impl Browser {
 
     fn filter_document(&self, load: WebResourceLoad, url: Url, is_get: bool) {
         if pages::is_internal(&url) {
-            let html = pages::start_page(&self.search);
+            let html = pages::start_page(&self.search, self.blocked_count());
             respond_html(load, &url, StatusCode::OK, html, pages::START_PAGE_CSP);
             return;
         }
