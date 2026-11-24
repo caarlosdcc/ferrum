@@ -165,15 +165,20 @@ ferrum/
 │       └── src/
 │           ├── main.rs       Arranque y procesos de contenido
 │           ├── app.rs        Bucle de la ventana: reparte teclado y ratón
-│           ├── gui.rs        Interfaz (egui): pestañas, barra, desplegables
+│           ├── gui/          Interfaz (egui): pestañas en la barra de título,
+│           │                 barra de herramientas, iconos vectoriales, tema
+│           ├── logo.rs       Logotipo dibujado por código (icono de la ventana)
 │           ├── browser.rs    Pestañas + filtro de cada petición de red
 │           ├── hardening.rs  Preferencias endurecidas de Servo
 │           ├── pages.rs      Páginas internas (inicio, bloqueo)
 │           └── input.rs      Traducción de eventos
+├── scripts/generate-icons.py  Genera el icono del .exe (sin dependencias)
 └── third_party/epaint/     Copia de epaint (egui) con un arreglo: ver FERRUM.md
 ```
 
 La página se pinta en un búfer aparte y la interfaz la copia debajo de la barra.
+Ferrum dibuja su propia barra de título con las pestañas dentro (en macOS se
+mantiene la del sistema) y usa la tipografía del sistema operativo.
 La interfaz nunca pasa por el motor web, así que una página no puede leerla,
 taparla ni dibujar una barra de direcciones falsa encima.
 

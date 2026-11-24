@@ -24,12 +24,12 @@ use winit::event::{
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use winit::window::{CursorIcon, Window, WindowId};
+use winit::window::{CursorIcon, ResizeDirection, Window, WindowId};
 
 use crate::browser::Browser;
 use crate::config::Config;
-use crate::gui::{Action, Gui};
-use crate::{hardening, input, pages};
+use crate::gui::{self, Action, Gui};
+use crate::{hardening, input, logo, pages};
 
 /// Píxeles por "línea" de rueda del ratón.
 const LINE_HEIGHT: f32 = 76.0;
@@ -44,6 +44,8 @@ pub struct App {
     /// Se pulsó un botón dentro de la página: la página recibe el ratón hasta
     /// soltarlo, aunque salga de ella (para seleccionar texto arrastrando).
     dragging_in_page: bool,
+    /// El ratón está sobre un borde de la ventana (para redimensionarla).
+    resize_edge: Option<ResizeDirection>,
     modifiers: ModifiersState,
 }
 
@@ -77,6 +79,7 @@ impl App {
             cursor: PhysicalPosition::default(),
             cursor_in_page: false,
             dragging_in_page: false,
+            resize_edge: None,
             modifiers: ModifiersState::empty(),
         }
     }
@@ -87,10 +90,21 @@ impl App {
             return Ok(());
         };
 
+        // Ferrum dibuja su propia barra de título, con las pestañas dentro.
         let attributes = Window::default_attributes()
             .with_title("Ferrum")
             .with_inner_size(LogicalSize::new(1280.0, 800.0))
-            .with_min_inner_size(LogicalSize::new(480.0, 320.0));
+            .with_min_inner_size(LogicalSize::new(480.0, 320.0))
+            .with_decorations(!gui::custom_frame())
+            .with_window_icon(logo::window_icon());
+        #[cfg(windows)]
+        let attributes = {
+            use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
+            // Sombra y esquinas redondeadas de Windows 11 aunque no haya marco.
+            attributes
+                .with_undecorated_shadow(true)
+                .with_corner_preference(CornerPreference::Round)
+        };
         let window = event_loop
             .create_window(attributes)
             .map_err(|e| format!("no se pudo crear la ventana: {e}"))?;
@@ -220,6 +234,18 @@ impl App {
             },
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = position;
+                let edge = resize_edge(browser.window(), position);
+                if edge != self.resize_edge {
+                    self.resize_edge = edge;
+                    match edge {
+                        Some(direction) => browser.window().set_cursor(resize_cursor(direction)),
+                        None if self.cursor_in_page => browser.apply_page_cursor(),
+                        None => browser.window().set_cursor(CursorIcon::Default),
+                    }
+                }
+                if edge.is_some() {
+                    return browser.exit_requested();
+                }
                 let point = if self.dragging_in_page {
                     Some(gui.page_point_unchecked(position))
                 } else {
@@ -259,6 +285,12 @@ impl App {
                 }
             },
             WindowEvent::MouseInput { state, button, .. } => {
+                if let (ElementState::Pressed, MouseButton::Left, Some(direction)) =
+                    (state, button, self.resize_edge)
+                {
+                    let _ = browser.window().drag_resize_window(direction);
+                    return browser.exit_requested();
+                }
                 if state == ElementState::Pressed {
                     browser.note_user_gesture();
                     match button {
@@ -395,6 +427,8 @@ fn running_after_spin(browser: &Browser, screenshot: &mut Option<Screenshot>) {
     if shot.click_at.is_some_and(|at| now >= at) {
         shot.click_at = None;
         if let Some(point) = shot.click.take() {
+            // Como un clic real: cuenta como gesto del usuario.
+            browser.note_user_gesture();
             App::page_event(
                 browser,
                 InputEvent::MouseMove(MouseMoveEvent::new(point.into())),
@@ -460,6 +494,53 @@ fn apply_action(browser: &Browser, gui: &mut Gui, action: Action) {
         Action::Home => browser.home(),
         Action::Navigate(text) => browser.navigate(&text),
         Action::DismissMessage => browser.dismiss_message(),
+        Action::StartWindowDrag => {
+            let _ = browser.window().drag_window();
+        },
+        Action::ToggleMaximize => {
+            let window = browser.window();
+            window.set_maximized(!window.is_maximized());
+        },
+        Action::Minimize => browser.window().set_minimized(true),
+        Action::Quit => browser.request_exit(),
+    }
+}
+
+/// Borde de la ventana bajo el ratón, para redimensionarla cuando Ferrum dibuja
+/// su propio marco.
+fn resize_edge(window: &Window, cursor: PhysicalPosition<f64>) -> Option<ResizeDirection> {
+    if !gui::custom_frame() || window.is_maximized() {
+        return None;
+    }
+    let size = window.inner_size();
+    let border = 6.0 * window.scale_factor();
+    let left = cursor.x < border;
+    let right = cursor.x > f64::from(size.width) - border;
+    let top = cursor.y < border;
+    let bottom = cursor.y > f64::from(size.height) - border;
+    match (left, right, top, bottom) {
+        (true, _, true, _) => Some(ResizeDirection::NorthWest),
+        (_, true, true, _) => Some(ResizeDirection::NorthEast),
+        (true, _, _, true) => Some(ResizeDirection::SouthWest),
+        (_, true, _, true) => Some(ResizeDirection::SouthEast),
+        (true, ..) => Some(ResizeDirection::West),
+        (_, true, ..) => Some(ResizeDirection::East),
+        (_, _, true, _) => Some(ResizeDirection::North),
+        (_, _, _, true) => Some(ResizeDirection::South),
+        _ => None,
+    }
+}
+
+fn resize_cursor(direction: ResizeDirection) -> CursorIcon {
+    match direction {
+        ResizeDirection::North => CursorIcon::NResize,
+        ResizeDirection::South => CursorIcon::SResize,
+        ResizeDirection::East => CursorIcon::EResize,
+        ResizeDirection::West => CursorIcon::WResize,
+        ResizeDirection::NorthEast => CursorIcon::NeResize,
+        ResizeDirection::NorthWest => CursorIcon::NwResize,
+        ResizeDirection::SouthEast => CursorIcon::SeResize,
+        ResizeDirection::SouthWest => CursorIcon::SwResize,
     }
 }
 

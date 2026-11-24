@@ -13,6 +13,7 @@ mod config;
 mod gui;
 mod hardening;
 mod input;
+mod logo;
 mod pages;
 
 use std::process::ExitCode;

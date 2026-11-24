@@ -40,11 +40,16 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] 
 # Interfaz (pestañas, barra de direcciones, menús). Se dibuja en Rust, fuera del
 # motor web: ninguna página puede leerla, taparla ni falsificarla.
 # `glow` debe ser la misma versión que usa Servo para compartir el contexto OpenGL.
-# `monochrome_emoji_fonts` trae los iconos de la barra (⬅ ➡ 🔄 🏠 🔒 🛡).
+# Los iconos de la barra son vectoriales (src/gui/icons.rs); `monochrome_emoji_fonts`
+# solo sirve para los títulos de páginas que llevan emojis.
 egui = { version = "0.37", default-features = false, features = ["monochrome_emoji_fonts"] }
 egui_glow = { version = "0.37", features = ["winit", "clipboard"] }
 # Diálogo nativo del sistema para subir archivos (`<input type=file>`).
 rfd = "0.18"
+
+[build-dependencies]
+# Icono y datos de versión dentro de ferrum.exe (solo se usa al compilar para Windows).
+embed-resource = "3"
 
 [lints]
 workspace = true
