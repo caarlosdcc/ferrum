@@ -197,6 +197,19 @@ impl Gui {
         ))
     }
 
+    /// Zona de la página dentro de la ventana, en píxeles físicos:
+    /// `[x, y, ancho, alto]`.
+    pub fn page_rect_px(&self) -> Option<[u32; 4]> {
+        let size = self.viewport_size()?;
+        let ppp = self.pixels_per_point;
+        Some([
+            (self.viewport.min.x * ppp).round() as u32,
+            (self.viewport.min.y * ppp).round() as u32,
+            size.width,
+            size.height,
+        ])
+    }
+
     /// Dibuja la interfaz de un fotograma y devuelve lo que pidió el usuario.
     pub fn run(&mut self, browser: &Browser) -> Vec<Action> {
         let window = browser.window();
@@ -593,9 +606,15 @@ impl Gui {
             ACCENT,
         );
 
+        // Pastilla «Agente» si un agente de IA controla la ventana por MCP.
+        let right = match browser.agent() {
+            Some(busy) => agent_pill(ui, &painter, pill.left() - 8.0, center_y, busy).left(),
+            None => pill.left(),
+        };
+
         let address = Rect::from_min_max(
             pos2(x + 8.0, center_y - 17.0),
-            pos2(pill.left() - 10.0, center_y + 17.0),
+            pos2(right - 10.0, center_y + 17.0),
         );
         self.address_field(ui, &painter, address, browser, &nav, actions);
 
@@ -892,6 +911,48 @@ fn icon_button(
         if enabled { TEXT } else { FAINT },
     );
     enabled && response.clicked()
+}
+
+/// Pastilla «Agente», con su borde derecho en `right`: avisa de que un agente
+/// de IA controla la ventana. El punto late mientras el agente trabaja.
+fn agent_pill(ui: &mut Ui, painter: &Painter, right: f32, center_y: f32, busy: bool) -> Rect {
+    let label = one_line(ui, "Agente", 13.0, AGENT, f32::INFINITY);
+    let width = 12.0 + 7.0 + 7.0 + label.size().x + 12.0;
+    let pill = Rect::from_min_size(pos2(right - width, center_y - 15.0), vec2(width, 30.0));
+    let response = ui
+        .interact(pill, Id::unique("ferrum-agente"), Sense::hover())
+        .on_hover_text(
+            "Un agente de IA controla esta ventana a través de MCP (entrada y salida estándar, \
+             sin red). Cierra la ventana para cortarle el acceso.",
+        );
+    let fill = if response.hovered() {
+        AGENT_SOFT.gamma_multiply(1.6)
+    } else {
+        AGENT_SOFT
+    };
+    painter.rect_filled(pill, CornerRadius::same(15), fill);
+
+    let dot = pos2(pill.left() + 12.0 + 3.5, center_y);
+    if busy {
+        let time = ui.input(|i| i.time);
+        let pulse = ((time * std::f64::consts::TAU / 1.2).sin() * 0.5 + 0.5) as f32;
+        painter.circle_filled(
+            dot,
+            3.5 + 3.0 * pulse,
+            AGENT.gamma_multiply(0.35 * (1.0 - pulse)),
+        );
+        ui.ctx().request_repaint();
+    }
+    painter.circle_filled(dot, 3.5, AGENT);
+    painter.galley(
+        pos2(
+            pill.left() + 12.0 + 7.0 + 7.0,
+            center_y - label.size().y / 2.0,
+        ),
+        label,
+        AGENT,
+    );
+    pill
 }
 
 /// Forma de la pestaña activa: esquinas superiores redondeadas y dos curvas

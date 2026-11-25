@@ -14,6 +14,7 @@ mod gui;
 mod hardening;
 mod input;
 mod logo;
+mod mcp;
 mod pages;
 
 use std::process::ExitCode;
@@ -24,21 +25,20 @@ use crate::app::App;
 use crate::config::{Config, ParseOutcome};
 
 fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1).peekable();
+    let args: Vec<String> = std::env::args().skip(1).collect();
 
     // En modo multiproceso, Servo relanza este mismo ejecutable para cada
     // proceso de contenido web.
-    if args.peek().map(String::as_str) == Some("--content-process") {
-        args.next();
-        let Some(token) = args.next() else {
+    if args.first().map(String::as_str) == Some("--content-process") {
+        let Some(token) = args.get(1) else {
             eprintln!("--content-process requiere un token");
             return ExitCode::FAILURE;
         };
-        servo::run_content_process(token);
+        servo::run_content_process(token.clone());
         return ExitCode::SUCCESS;
     }
 
-    let config = match Config::from_args(args) {
+    let config = match Config::from_args(args.clone()) {
         Ok(ParseOutcome::Run(config)) => config,
         Ok(ParseOutcome::Exit(message)) => {
             println!("{message}");
@@ -49,6 +49,12 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         },
     };
+
+    // Con --mcp, este proceso solo habla con el agente; el navegador se abre
+    // aparte cuando hace falta.
+    if config.mcp_relay {
+        return mcp::relay::run(mcp::relay::browser_args(&args));
+    }
 
     // Criptografía TLS: aws-lc-rs (auditado, con verificación formal de partes
     // críticas). Debe instalarse antes de cualquier conexión.

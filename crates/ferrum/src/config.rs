@@ -35,6 +35,10 @@ OPCIONES:
     --click <X,Y>         Con --screenshot: antes de la captura, hace clic en ese
                           punto de la página (en píxeles), p. ej. para abrir una
                           lista desplegable.
+    --mcp                 Servidor MCP: deja que un agente de IA (p. ej. Claude
+                          Code) use Ferrum por la entrada y salida estándar. No
+                          abre ningún puerto de red, y la ventana no aparece hasta
+                          que el agente la usa.
     -h, --help            Muestra esta ayuda.
     -V, --version         Muestra la versión.
 
@@ -56,6 +60,10 @@ pub struct Config {
     pub proxy: Option<String>,
     pub screenshot: Option<PathBuf>,
     pub click: Option<(f32, f32)>,
+    /// `--mcp`: proceso que habla con el agente (sin ventana).
+    pub mcp_relay: bool,
+    /// `--mcp-browser` (uso interno): navegador controlado por ese proceso.
+    pub mcp: bool,
     pub initial_input: Option<String>,
 }
 
@@ -99,6 +107,8 @@ impl Config {
                 "--proxy" => config.proxy = Some(value("--proxy")?),
                 "--screenshot" => config.screenshot = Some(value("--screenshot")?.into()),
                 "--click" => config.click = Some(parse_point(&value("--click")?)?),
+                "--mcp" => config.mcp_relay = true,
+                "--mcp-browser" => config.mcp = true,
                 flag if flag.starts_with('-') => {
                     return Err(format!("opción desconocida: {flag}\n\n{HELP}"));
                 },
@@ -149,6 +159,7 @@ mod tests {
         assert!(!config.multiprocess);
         assert!(config.proxy.is_none());
         assert!(config.screenshot.is_none());
+        assert!(!config.mcp && !config.mcp_relay);
         assert_eq!(config.search.name, "DuckDuckGo");
     }
 
@@ -189,6 +200,13 @@ mod tests {
         assert_eq!(config.click, Some((200.0, 130.0)));
         assert!(parse(&["--click", "200"]).is_err());
         assert!(parse(&["--click", "-1,5"]).is_err());
+    }
+
+    #[test]
+    fn mcp_is_opt_in() {
+        let relay = run(&["--mcp"]);
+        assert!(relay.mcp_relay && !relay.mcp);
+        assert!(run(&["--mcp-browser"]).mcp);
     }
 
     #[test]

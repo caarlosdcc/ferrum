@@ -13,8 +13,8 @@ use ferrum_shield::omnibox;
 use ferrum_shield::{Category, Shield, ShieldConfig};
 use servo::{
     DeviceIntRect, DeviceIntSize, DevicePoint, EventLoopWaker, InputEvent, MouseButtonAction,
-    MouseButtonEvent, MouseLeftViewportEvent, MouseMoveEvent, RenderingContext, ServoBuilder,
-    WheelDelta, WheelEvent, WheelMode, WindowRenderingContext,
+    MouseButtonEvent, MouseLeftViewportEvent, MouseMoveEvent, RenderingContext, RgbaImage,
+    ServoBuilder, WheelDelta, WheelEvent, WheelMode, WindowRenderingContext,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
@@ -29,7 +29,7 @@ use winit::window::{CursorIcon, ResizeDirection, Window, WindowId};
 use crate::browser::Browser;
 use crate::config::Config;
 use crate::gui::{self, Action, Gui};
-use crate::{hardening, input, logo, pages};
+use crate::{hardening, input, logo, mcp, pages};
 
 /// Píxeles por "línea" de rueda del ratón.
 const LINE_HEIGHT: f32 = 76.0;
@@ -47,6 +47,8 @@ pub struct App {
     /// El ratón está sobre un borde de la ventana (para redimensionarla).
     resize_edge: Option<ResizeDirection>,
     modifiers: ModifiersState,
+    /// Servidor MCP, con `--mcp`.
+    mcp: Option<mcp::Server>,
 }
 
 enum State {
@@ -71,16 +73,19 @@ struct Screenshot {
 
 impl App {
     pub fn new(event_loop: &EventLoop<WakeUp>, config: Config) -> Self {
+        let waker = Waker(event_loop.create_proxy());
+        let mcp = config.mcp.then(|| {
+            let waker = waker.clone();
+            mcp::Server::start(move || waker.wake())
+        });
         Self {
-            state: State::Starting {
-                waker: Waker(event_loop.create_proxy()),
-                config,
-            },
+            state: State::Starting { waker, config },
             cursor: PhysicalPosition::default(),
             cursor_in_page: false,
             dragging_in_page: false,
             resize_edge: None,
             modifiers: ModifiersState::empty(),
+            mcp,
         }
     }
 
@@ -151,8 +156,16 @@ impl App {
             Some(url) => browser.open_tab(url),
             None => {
                 browser.open_tab(pages::start_url());
-                gui.focus_address();
+                // Con un agente al mando, la barra no se queda en edición: si
+                // no, seguiría vacía mientras el agente navega.
+                if !config.mcp {
+                    gui.focus_address();
+                }
             },
+        }
+
+        if self.mcp.is_some() {
+            browser.set_agent(Some(false));
         }
 
         log::info!(
@@ -176,6 +189,9 @@ impl App {
     }
 
     fn finish(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(server) = &mut self.mcp {
+            server.shutdown();
+        }
         if let State::Running(running) = &mut self.state {
             running.gui.destroy();
         }
@@ -200,7 +216,7 @@ impl App {
             screenshot,
         } = &mut **running;
         browser.servo().spin_event_loop();
-        running_after_spin(browser, screenshot);
+        running_after_spin(browser, screenshot, self.mcp.as_mut());
 
         if gui.on_window_event(browser.window(), &event) {
             browser.window().request_redraw();
@@ -209,7 +225,7 @@ impl App {
         match event {
             WindowEvent::CloseRequested => return true,
             WindowEvent::RedrawRequested => {
-                if redraw(browser, gui, screenshot) {
+                if redraw(browser, gui, screenshot, self.mcp.as_mut()) {
                     return true;
                 }
             },
@@ -378,7 +394,7 @@ impl ApplicationHandler<WakeUp> for App {
             return;
         };
         running.browser.servo().spin_event_loop();
-        running_after_spin(&running.browser, &mut running.screenshot);
+        running_after_spin(&running.browser, &mut running.screenshot, self.mcp.as_mut());
         if running.browser.exit_requested() {
             self.finish(event_loop);
         }
@@ -398,6 +414,7 @@ impl ApplicationHandler<WakeUp> for App {
             running.gui.repaint_deadline(),
             running.screenshot.as_ref().and_then(|shot| shot.due),
             running.screenshot.as_ref().and_then(|shot| shot.click_at),
+            self.mcp.as_ref().and_then(mcp::Server::deadline),
         ]
         .into_iter()
         .flatten()
@@ -410,8 +427,18 @@ impl ApplicationHandler<WakeUp> for App {
 }
 
 /// Trabajo pendiente tras dejar que Servo procese sus mensajes.
-fn running_after_spin(browser: &Browser, screenshot: &mut Option<Screenshot>) {
+fn running_after_spin(
+    browser: &Browser,
+    screenshot: &mut Option<Screenshot>,
+    mcp: Option<&mut mcp::Server>,
+) {
     browser.run_file_picker();
+    if let Some(server) = mcp {
+        server.poll(browser);
+        if server.closed() {
+            browser.request_exit();
+        }
+    }
     let Some(shot) = screenshot.as_mut() else {
         return;
     };
@@ -450,13 +477,25 @@ fn running_after_spin(browser: &Browser, screenshot: &mut Option<Screenshot>) {
 
 /// Compone un fotograma: la página (pintada por Servo) y la interfaz encima.
 /// Devuelve `true` si hay que cerrar (tras una captura de `--screenshot`).
-fn redraw(browser: &Browser, gui: &mut Gui, screenshot: &mut Option<Screenshot>) -> bool {
+fn redraw(
+    browser: &Browser,
+    gui: &mut Gui,
+    screenshot: &mut Option<Screenshot>,
+    mcp: Option<&mut mcp::Server>,
+) -> bool {
     browser.paint_page();
     let actions = gui.run(browser);
 
     let rendering_context = browser.rendering_context();
     rendering_context.prepare_for_rendering();
     gui.paint(browser.window());
+
+    // Captura para el agente, con lo mismo que ve el usuario.
+    if let Some(server) = mcp.filter(|server| server.wants_capture())
+        && let Some(image) = window_image(rendering_context, browser.window())
+    {
+        server.deliver_capture(&image, gui.page_rect_px());
+    }
 
     let capture_now = screenshot
         .as_ref()
@@ -544,10 +583,14 @@ fn resize_cursor(direction: ResizeDirection) -> CursorIcon {
     }
 }
 
-fn save_screenshot(rendering_context: &WindowRenderingContext, window: &Window, path: &PathBuf) {
+fn window_image(rendering_context: &WindowRenderingContext, window: &Window) -> Option<RgbaImage> {
     let size = window.inner_size();
     let rect = DeviceIntRect::from_size(DeviceIntSize::new(size.width as i32, size.height as i32));
-    match rendering_context.read_to_image(rect) {
+    rendering_context.read_to_image(rect)
+}
+
+fn save_screenshot(rendering_context: &WindowRenderingContext, window: &Window, path: &PathBuf) {
+    match window_image(rendering_context, window) {
         Some(image) => match image.save(path) {
             Ok(()) => log::info!("Captura guardada en {}", path.display()),
             Err(error) => eprintln!("No se pudo guardar la captura: {error}"),

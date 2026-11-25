@@ -92,12 +92,58 @@ ferrum [OPCIONES] [URL o búsqueda]
 | `--proxy <url>` | Enviar el tráfico por un proxy HTTP |
 | `--screenshot <archivo.png>` | Guardar una captura al terminar de cargar y cerrar (pruebas) |
 | `--click <X,Y>` | Con `--screenshot`: hacer clic en ese punto antes de la captura |
+| `--mcp` | Servidor MCP para agentes de IA (ver abajo) |
 
 Ejemplo con listas públicas de la comunidad (descárgalas antes):
 
 ```
 ferrum --blocklist easyprivacy.txt --malware-list urlhaus-hosts.txt
 ```
+
+## Usar Ferrum desde un agente de IA (MCP)
+
+`ferrum --mcp` convierte Ferrum en un servidor
+[MCP](https://modelcontextprotocol.io) para que un agente como Claude Code
+navegue con él: abre páginas, las lee, hace clic, escribe y hace capturas.
+
+1. Compila e instala una copia fuera de la carpeta de compilación (así puedes
+   seguir compilando mientras el agente usa Ferrum):
+   ```powershell
+   .\scripts\build-windows.ps1
+   .\scripts\install-mcp.ps1
+   ```
+2. Regístralo en Claude Code:
+   ```powershell
+   claude mcp add ferrum -- "$env:LOCALAPPDATA\Programs\Ferrum\ferrum.exe" --mcp
+   ```
+   O en el `.mcp.json` del proyecto:
+   ```json
+   { "mcpServers": { "ferrum": { "command": "${LOCALAPPDATA}\\Programs\\Ferrum\\ferrum.exe", "args": ["--mcp"] } } }
+   ```
+
+| Herramienta | Qué hace |
+|---|---|
+| `navigate` | Abre una dirección o búsqueda y espera a que cargue |
+| `read_page` | Título, texto y elementos con los que interactuar, con coordenadas |
+| `screenshot` | Captura de la página (o de toda la ventana con `include_ui`) |
+| `click` | Clic por coordenadas, selector CSS o texto visible |
+| `type_text` / `press_key` | Escribe o pulsa teclas en la página |
+| `scroll` | Desplaza con la rueda del ratón |
+| `select_option` | Elige una opción de un `<select>` |
+| `evaluate` | Ejecuta JavaScript en la página |
+| `history` / `tabs` / `wait` | Atrás, adelante, recargar, pestañas y esperas |
+
+Cómo funciona y por qué es seguro:
+
+- **Solo por la entrada y la salida estándar.** No abre ningún puerto de red:
+  únicamente el programa que lanzó Ferrum puede controlarlo.
+- **Sin ventana hasta que hace falta.** En espera, `ferrum --mcp` ocupa unos
+  10 MB y no carga el motor web. La primera herramienta abre el navegador
+  como proceso aparte; si cierras la ventana, la siguiente abre otra.
+- **Siempre a la vista.** La ventana es la normal, con una pastilla azul
+  «Agente» en la barra mientras un agente la controla.
+- **Sin rastro.** Como siempre en Ferrum, cookies e historial viven en memoria
+  y se borran al cerrar. El escudo y el resto de protecciones siguen activos.
 
 ## Compilar
 
@@ -171,8 +217,10 @@ ferrum/
 │           ├── browser.rs    Pestañas + filtro de cada petición de red
 │           ├── hardening.rs  Preferencias endurecidas de Servo
 │           ├── pages.rs      Páginas internas (inicio, bloqueo)
+│           ├── mcp/          Servidor MCP para agentes de IA (`--mcp`)
 │           └── input.rs      Traducción de eventos
 ├── scripts/generate-icons.py  Genera el icono del .exe (sin dependencias)
+├── scripts/install-mcp.ps1    Instala la copia que usan los agentes
 └── third_party/epaint/     Copia de epaint (egui) con un arreglo: ver FERRUM.md
 ```
 
@@ -192,6 +240,7 @@ iframes) con la lista de rastreadores, salvo que sean del propio sitio.
 - [x] Barra de herramientas gráfica (egui) con pestañas visibles
 - [x] Desplegables `<select>`, selector de color y subida de archivos
 - [x] Web Crypto (`crypto.subtle`) para inicios de sesión y apps cifradas
+- [x] Servidor MCP para que agentes de IA naveguen con Ferrum
 - [ ] Reproducción de vídeo y audio
 - [ ] Menú de clic derecho y diálogos propios
 - [ ] Panel del escudo: qué se bloqueó y excepciones por sitio
