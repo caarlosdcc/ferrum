@@ -48,6 +48,10 @@ también a Servo siguiendo su [política de seguridad](https://github.com/servo/
 
 - **Windows no tiene sandbox de procesos** en Servo: `--multiprocess` separa el
   contenido en otros procesos, pero con los mismos privilegios del usuario.
+- **Vídeo y audio** usan GStreamer y sus decodificadores (entre ellos FFmpeg),
+  escritos en C: un archivo multimedia malicioso es una vía de ataque clásica.
+  Ferrum solo carga los plugins que necesita Servo, pero si no quieres ese
+  riesgo compila sin ellos (`build-windows.ps1 -NoMedia`).
 - **SpiderMonkey** (motor JavaScript) está escrito en C++. Es el componente con
   más superficie de ataque; `--strict` reduce mucho el riesgo al desactivar el JIT.
 - **Servo es software joven** y no ha pasado por las mismas auditorías ni el

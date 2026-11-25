@@ -50,9 +50,10 @@ Ser honestos con lo que **no** hace es parte de la seguridad:
 
 - **Compatibilidad.** Servo es un motor joven: algunos sitios complejos se ven
   mal o no funcionan. Mejora cada mes.
-- **Sin vídeo ni audio.** La compilación aún no incluye el reproductor
-  multimedia (GStreamer): YouTube y cualquier `<video>` o `<audio>` no se
-  reproducen. Tampoco hay DRM, así que Netflix o Spotify no funcionarán.
+- **Vídeo y audio, con límites.** Con GStreamer se reproducen `<video>` y
+  `<audio>` normales (MP4, WebM, Ogg, MP3…), pero Servo aún no implementa
+  Media Source Extensions, así que YouTube, Twitch y la mayoría de plataformas
+  de streaming no funcionan. Tampoco hay DRM (Netflix, Spotify).
 - **Interfaz sencilla.** Hay pestañas, barra de herramientas, barra de
   direcciones, listas desplegables, selector de color y subida de archivos. Aún
   no hay descargas, marcadores, historial ni menú de clic derecho.
@@ -110,7 +111,7 @@ navegue con él: abre páginas, las lee, hace clic, escribe y hace capturas.
    seguir compilando mientras el agente usa Ferrum):
    ```powershell
    .\scripts\build-windows.ps1
-   .\scripts\install-mcp.ps1
+   .\scripts\install-windows.ps1
    ```
 2. Regístralo en Claude Code:
    ```powershell
@@ -137,8 +138,8 @@ Cómo funciona y por qué es seguro:
 
 - **Solo por la entrada y la salida estándar.** No abre ningún puerto de red:
   únicamente el programa que lanzó Ferrum puede controlarlo.
-- **Sin ventana hasta que hace falta.** En espera, `ferrum --mcp` ocupa unos
-  10 MB y no carga el motor web. La primera herramienta abre el navegador
+- **Sin ventana hasta que hace falta.** En espera, `ferrum --mcp` no carga el
+  motor web: ocupa unos 30 MB (10 MB si se compiló sin vídeo ni audio). La primera herramienta abre el navegador
   como proceso aparte; si cierras la ventana, la siguiente abre otra.
 - **Siempre a la vista.** La ventana es la normal, con una pastilla azul
   «Agente» en la barra mientras un agente la controla.
@@ -161,17 +162,27 @@ Necesitas Rust estable (1.95 o superior). Compilar Servo es pesado: reserva
    ```powershell
    winget install LLVM.LLVM
    ```
-4. Compila y abre el navegador con el script, que configura LLVM y, si el
-   proyecto está en OneDrive o en una ruta con espacios, compila fuera de ella
-   (la carpeta `target` ocupa decenas de GB y no conviene sincronizarla):
+4. Para vídeo y audio, [GStreamer](https://gstreamer.freedesktop.org/download/)
+   1.24 o posterior (instalador *MSVC x86_64*). Sin él, Ferrum funciona igual
+   pero sin reproducir `<video>` ni `<audio>`.
+5. Compila y abre el navegador con el script. Configura LLVM; si encuentra
+   GStreamer, activa el vídeo y el audio y copia junto a `ferrum.exe` solo las
+   bibliotecas que hacen falta; y si el proyecto está en OneDrive o en una ruta
+   con espacios, compila fuera de ella (la carpeta `target` ocupa decenas de GB
+   y no conviene sincronizarla):
    ```powershell
    .\scripts\build-windows.ps1 -Run
    ```
-   O a mano:
+   O a mano (sin vídeo ni audio; con ellos, `--features media` y GStreamer
+   configurado para `pkg-config`):
    ```powershell
    $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
    cargo build --release
    .\target\release\ferrum.exe
+   ```
+6. Instálalo para tu usuario, con un acceso directo en el escritorio:
+   ```powershell
+   .\scripts\install-windows.ps1 -Desktop
    ```
 
 ### Linux (Debian/Ubuntu)
@@ -220,7 +231,7 @@ ferrum/
 │           ├── mcp/          Servidor MCP para agentes de IA (`--mcp`)
 │           └── input.rs      Traducción de eventos
 ├── scripts/generate-icons.py  Genera el icono del .exe (sin dependencias)
-├── scripts/install-mcp.ps1    Instala la copia que usan los agentes
+├── scripts/install-windows.ps1  Instala Ferrum para tu usuario (y para los agentes)
 └── third_party/epaint/     Copia de epaint (egui) con un arreglo: ver FERRUM.md
 ```
 
@@ -241,7 +252,7 @@ iframes) con la lista de rastreadores, salvo que sean del propio sitio.
 - [x] Desplegables `<select>`, selector de color y subida de archivos
 - [x] Web Crypto (`crypto.subtle`) para inicios de sesión y apps cifradas
 - [x] Servidor MCP para que agentes de IA naveguen con Ferrum
-- [ ] Reproducción de vídeo y audio
+- [x] Reproducción de vídeo y audio (GStreamer; sin MSE todavía)
 - [ ] Menú de clic derecho y diálogos propios
 - [ ] Panel del escudo: qué se bloqueó y excepciones por sitio
 - [ ] Descargas con cuarentena y verificación
