@@ -24,8 +24,8 @@ también a Servo siguiendo su [política de seguridad](https://github.com/servo/
 | Interceptación de tráfico en redes Wi-Fi públicas | Modo solo-HTTPS en el motor; TLS con rustls + aws-lc-rs |
 | Descarga e instalación de malware | Bloqueo de enlaces directos a ejecutables, scripts, instaladores, imágenes de disco y documentos con macros |
 | Phishing y dominios maliciosos conocidos | Listas de malware cargadas con `--malware-list`; dominios internacionales en punycode |
-| Suplantación de la interfaz | La interfaz se dibuja fuera del motor web (la página no puede taparla ni imitarla); dirección completa en punycode; caracteres bidi y de control eliminados del texto de la página; `alert()` marcado como texto de la página |
-| Spam de ventanas y diálogos | Pop-ups solo tras un gesto del usuario; diálogos que se cierran solos |
+| Suplantación de la interfaz | La interfaz se dibuja fuera del motor web (la página no puede taparla ni imitarla); dirección completa en punycode; caracteres bidi y de control eliminados del texto de la página; los avisos de la página (`alert()`, `confirm()`, `prompt()`) dicen qué dominio los pide |
+| Spam de ventanas y diálogos | Pop-ups solo tras un gesto del usuario; los avisos solo pausan su pestaña y, desde el segundo, se pueden silenciar |
 | Abuso de permisos (cámara, micrófono, ubicación, notificaciones) | Denegados siempre |
 | Acceso a archivos locales desde la web | Navegación a `file://` bloqueada; `javascript:`, `data:` y `file:` no se abren desde la barra |
 | Exploits de memoria en el motor | Rust en casi todo Servo; `--strict` apaga el JIT y WebAssembly de SpiderMonkey y aísla el contenido en procesos (con sandbox en Linux x86_64 y macOS) |

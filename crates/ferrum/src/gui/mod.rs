@@ -20,10 +20,10 @@ use std::time::{Duration, Instant};
 use egui::epaint::{Mesh, Vertex, WHITE_UV};
 use egui::text::{CCursorRange, LayoutJob, TextFormat, TextWrapping};
 use egui::{
-    Align, Align2, Area, CentralPanel, Color32, ColorImage, Context, CornerRadius, Frame, Galley,
-    Id, Key, Label, Layout, Margin, Order, Painter, Panel, Pos2, Rect, Response, RichText, Sense,
-    Shape, Stroke, StrokeKind, TextBuffer, TextEdit, TextureHandle, TextureOptions, Ui, UiBuilder,
-    pos2, vec2,
+    Align, Align2, Area, Button, CentralPanel, Color32, ColorImage, Context, CornerRadius, Frame,
+    Galley, Id, Key, Label, LayerId, Layout, Margin, Order, Painter, Panel, Pos2, Rect, Response,
+    RichText, ScrollArea, Sense, Shape, Stroke, StrokeKind, TextBuffer, TextEdit, TextureHandle,
+    TextureOptions, Ui, UiBuilder, pos2, vec2,
 };
 use egui_glow::egui_winit;
 use euclid::default::{Point2D, Rect as GlRect, Size2D};
@@ -36,7 +36,7 @@ use winit::window::Window;
 use self::controls::Outcome;
 use self::icons::Icon;
 use self::theme::*;
-use crate::browser::{Browser, Location, NavigationState, PageControl, TabInfo};
+use crate::browser::{Browser, DialogKind, Location, NavigationState, PageControl, TabInfo};
 
 /// Alto de la barra de título con las pestañas, en puntos lógicos.
 pub const TAB_BAR_HEIGHT: f32 = 40.0;
@@ -299,7 +299,9 @@ impl Gui {
             .inner;
         self.viewport = viewport;
 
-        self.control_open = self.page_control(ui.ctx(), browser);
+        let control_open = self.page_control(ui.ctx(), browser);
+        let dialog_open = self.page_dialog(ui.ctx(), browser);
+        self.control_open = control_open || dialog_open;
     }
 
     // --- Barra de título y pestañas -------------------------------------
@@ -798,19 +800,31 @@ impl Gui {
 
     // --- Controles de la página -----------------------------------------
 
-    /// Dibuja la lista desplegable o el selector de color que pidió la página.
-    /// Devuelve `true` si sigue abierto.
+    /// Dibuja la lista desplegable, el selector de color o el menú de clic
+    /// derecho que pidió la página. Devuelve `true` si sigue abierto.
     fn page_control(&self, ctx: &Context, browser: &Browser) -> bool {
         let Some(mut control) = browser.take_control() else {
             return false;
         };
         let ppp = self.pixels_per_point;
         let element = control.position();
-        let anchor = pos2(
-            self.viewport.min.x + element.min.x as f32 / ppp,
-            self.viewport.min.y + element.max.y as f32 / ppp + 4.0,
-        );
-        let min_width = (element.width() as f32 / ppp).max(160.0);
+        let is_menu = matches!(control, PageControl::Menu { .. });
+        // El menú sale donde se hizo clic; los demás, bajo el elemento.
+        let anchor = match &control {
+            PageControl::Menu { at: Some(at), .. } => pos2(
+                self.viewport.min.x + at.x / ppp,
+                self.viewport.min.y + at.y / ppp,
+            ),
+            _ => pos2(
+                self.viewport.min.x + element.min.x as f32 / ppp,
+                self.viewport.min.y + element.max.y as f32 / ppp + 4.0,
+            ),
+        };
+        let min_width = if is_menu {
+            controls::MENU_WIDTH
+        } else {
+            (element.width() as f32 / ppp).max(160.0)
+        };
 
         let mut outcome = Outcome::Open;
         let area = Area::new(Id::unique(CONTROL_ID))
@@ -819,12 +833,14 @@ impl Gui {
             .constrain_to(self.viewport)
             .show(ctx, |ui| {
                 Frame::popup(ui.style())
-                    .inner_margin(Margin::same(6))
+                    .inner_margin(Margin::same(if is_menu { 5 } else { 6 }))
                     .show(ui, |ui| {
                         ui.set_min_width(min_width);
+                        ui.spacing_mut().item_spacing.y = 0.0;
                         outcome = match &mut control {
                             PageControl::Select(select) => controls::select_list(ui, select),
                             PageControl::Color { color, .. } => controls::color_chooser(ui, color),
+                            PageControl::Menu { menu, .. } => controls::context_menu(ui, menu),
                         };
                     });
             });
@@ -850,11 +866,131 @@ impl Gui {
                 browser.window().request_redraw();
                 false
             },
+            Outcome::Choose(action) => {
+                // Elegir en el menú cuenta como gesto: puede abrir una pestaña.
+                browser.note_user_gesture();
+                control.choose(action);
+                browser.window().request_redraw();
+                false
+            },
             Outcome::Cancel => {
                 // Al soltarlo, Servo recibe la selección original.
                 drop(control);
                 browser.window().request_redraw();
                 false
+            },
+        }
+    }
+
+    /// Cuadro para el `alert()`, `confirm()` o `prompt()` de la pestaña activa,
+    /// con el dominio que lo pide. Devuelve `true` si sigue abierto.
+    fn page_dialog(&self, ctx: &Context, browser: &Browser) -> bool {
+        let Some(mut dialog) = browser.take_dialog() else {
+            return false;
+        };
+        let kind = dialog.kind();
+
+        // Velo sobre la página: queda en pausa hasta que se responda. Las
+        // pestañas y la barra siguen funcionando.
+        ctx.layer_painter(LayerId::new(Order::Middle, Id::unique("ferrum-velo")))
+            .rect_filled(
+                self.viewport,
+                CornerRadius::ZERO,
+                Color32::from_black_alpha(130),
+            );
+
+        let width = (self.viewport.width() - 32.0).clamp(260.0, 470.0);
+        let position = pos2(
+            self.viewport.center().x - width / 2.0,
+            self.viewport.min.y + 22.0,
+        );
+        let mut answer = None;
+        // Un área nueva por aviso: así no hereda el tamaño del anterior.
+        Area::new(Id::unique(("ferrum-dialogo", dialog.shown)))
+            .order(Order::Foreground)
+            .fixed_pos(position)
+            .show(ctx, |ui| {
+                Frame::popup(ui.style())
+                    .corner_radius(CornerRadius::same(12))
+                    .inner_margin(Margin::same(20))
+                    .show(ui, |ui| {
+                        ui.set_width(width - 40.0);
+                        ui.horizontal(|ui| {
+                            let (rect, _) =
+                                ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                            icons::paint(ui.painter(), rect, Icon::Globe, MUTED);
+                            ui.add(
+                                Label::new(
+                                    RichText::new(format!("{} dice", dialog.origin))
+                                        .size(14.0)
+                                        .strong()
+                                        .color(TEXT),
+                                )
+                                .truncate(),
+                            );
+                        });
+                        ui.add_space(12.0);
+                        ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                            ui.label(RichText::new(&dialog.message).size(14.0).color(TEXT));
+                        });
+                        if kind == DialogKind::Prompt {
+                            ui.add_space(12.0);
+                            let field = ui.add(
+                                TextEdit::singleline(&mut dialog.text)
+                                    .desired_width(f32::INFINITY)
+                                    .font(theme::font(14.0))
+                                    .margin(Margin::symmetric(8, 6)),
+                            );
+                            if !field.has_focus() {
+                                field.request_focus();
+                            }
+                        }
+                        if dialog.shown >= 2 {
+                            ui.add_space(10.0);
+                            ui.checkbox(
+                                &mut dialog.mute,
+                                RichText::new("Impedir que esta página muestre más avisos")
+                                    .size(13.0)
+                                    .color(MUTED),
+                            );
+                        }
+                        ui.add_space(18.0);
+                        // Fila de botones de alto fijo, alineada a la derecha.
+                        let row = vec2(ui.available_width(), 32.0);
+                        let buttons = Layout::right_to_left(Align::Center);
+                        ui.allocate_ui_with_layout(row, buttons, |ui| {
+                            if accent_button(ui, "Aceptar").clicked() {
+                                answer = Some(true);
+                            }
+                            if kind != DialogKind::Alert {
+                                let cancel = Button::new(RichText::new("Cancelar").size(14.0))
+                                    .corner_radius(8)
+                                    .min_size(vec2(92.0, 32.0));
+                                if ui.add(cancel).clicked() {
+                                    answer = Some(false);
+                                }
+                            }
+                        });
+                    });
+            });
+
+        // Intro acepta; Escape cancela (un `alert()` solo se cierra).
+        ctx.input(|input| {
+            if input.key_pressed(Key::Enter) {
+                answer = Some(true);
+            } else if input.key_pressed(Key::Escape) {
+                answer = Some(kind == DialogKind::Alert);
+            }
+        });
+
+        match answer {
+            Some(accept) => {
+                browser.resolve_dialog(dialog, accept);
+                false
+            },
+            None => {
+                browser.put_back_dialog(dialog);
+                true
             },
         }
     }
@@ -1040,7 +1176,17 @@ fn pretty_url(full: &str) -> String {
         .to_owned()
 }
 
-/// Franja con el mensaje de un `alert()`, claramente separada de la interfaz.
+/// Botón principal de un cuadro, en el color de la marca.
+fn accent_button(ui: &mut Ui, label: &str) -> Response {
+    ui.add(
+        Button::new(RichText::new(label).size(14.0).color(Color32::WHITE))
+            .fill(ACCENT)
+            .corner_radius(8)
+            .min_size(vec2(92.0, 32.0)),
+    )
+}
+
+/// Franja con avisos de Ferrum (p. ej. una pestaña que dejó de funcionar).
 fn message_bar(ui: &mut Ui, message: &str, actions: &mut Vec<Action>) {
     Panel::top("aviso-pagina")
         .resizable(false)

@@ -9,6 +9,7 @@
 //! equipo. Ahí se decide si se bloquea, se limpia o se deja pasar.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
@@ -18,12 +19,12 @@ use ferrum_shield::{Shield, Verdict};
 use http::header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, REFERRER_POLICY};
 use http::{HeaderMap, HeaderValue, Method, StatusCode};
 use servo::{
-    ColorPicker, ConsoleLogLevel, CreateNewWebViewRequest, Cursor, DeviceIndependentPixel,
-    DeviceIntRect, DevicePixel, EmbedderControl, EmbedderControlId, FilePicker, Image, LoadStatus,
-    NavigationRequest, OffscreenRenderingContext, PermissionRequest, RenderingContext,
-    SelectElement, Servo, SimpleDialog, UserContentManager, UserScript, WebResourceLoad,
-    WebResourceResponse, WebView, WebViewBuilder, WebViewDelegate, WebViewId,
-    WindowRenderingContext,
+    ColorPicker, ConsoleLogLevel, ContextMenu, ContextMenuAction, CreateNewWebViewRequest, Cursor,
+    DeviceIndependentPixel, DeviceIntRect, DevicePixel, DevicePoint, EmbedderControl,
+    EmbedderControlId, FilePicker, Image, LoadStatus, NavigationRequest, OffscreenRenderingContext,
+    PermissionRequest, RenderingContext, SelectElement, Servo, SimpleDialog, UserContentManager,
+    UserScript, WebResourceLoad, WebResourceResponse, WebView, WebViewBuilder, WebViewDelegate,
+    WebViewId, WindowRenderingContext,
 };
 use url::Url;
 use winit::dpi::PhysicalSize;
@@ -39,8 +40,11 @@ const PRIVACY_SCRIPT: &str = include_str!("../resources/privacy.js");
 /// tecla del usuario. Así se bloquean los pop-ups y pop-unders automáticos.
 const POPUP_GESTURE_WINDOW: Duration = Duration::from_millis(1500);
 
-/// Cuánto tiempo se muestra el mensaje de un `alert()`.
+/// Cuánto tiempo se muestra un aviso de Ferrum en la franja de mensajes.
 const PAGE_MESSAGE_DURATION: Duration = Duration::from_secs(8);
+
+/// Largo máximo del texto de un `alert()`, `confirm()` o `prompt()`.
+const DIALOG_MAX_CHARS: usize = 1500;
 
 /// Lo que la interfaz necesita saber de cada pestaña.
 #[derive(Clone, Debug)]
@@ -77,6 +81,11 @@ pub enum PageControl {
         picker: ColorPicker,
         color: egui::Color32,
     },
+    /// Menú de clic derecho. `at` es el punto de la página donde se hizo clic.
+    Menu {
+        menu: ContextMenu,
+        at: Option<DevicePoint>,
+    },
 }
 
 impl PageControl {
@@ -84,6 +93,7 @@ impl PageControl {
         match self {
             PageControl::Select(select) => select.id(),
             PageControl::Color { picker, .. } => picker.id(),
+            PageControl::Menu { menu, .. } => menu.id(),
         }
     }
 
@@ -92,6 +102,7 @@ impl PageControl {
         match self {
             PageControl::Select(select) => select.position(),
             PageControl::Color { picker, .. } => picker.position(),
+            PageControl::Menu { menu, .. } => menu.position(),
         }
     }
 
@@ -103,8 +114,73 @@ impl PageControl {
                 picker.select(Some(gui::color_to_rgb(color)));
                 picker.submit();
             },
+            PageControl::Menu { menu, .. } => menu.dismiss(),
         }
     }
+
+    /// Ejecuta una acción del menú de clic derecho (Servo hace el resto).
+    pub fn choose(self, action: ContextMenuAction) {
+        if let PageControl::Menu { menu, .. } = self {
+            menu.select(action);
+        }
+    }
+}
+
+/// Tipo de aviso que pide una página.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DialogKind {
+    Alert,
+    Confirm,
+    Prompt,
+}
+
+/// `alert()`, `confirm()` o `prompt()` de una página, esperando respuesta. La
+/// página queda en pausa hasta que se responde, pero solo esa pestaña: el resto
+/// del navegador sigue funcionando.
+pub struct PageDialog {
+    dialog: SimpleDialog,
+    /// Quién lo pide: el dominio de la página, para que no pueda hacerse pasar
+    /// por Ferrum ni por otra web.
+    pub origin: String,
+    pub message: String,
+    /// Texto del campo de `prompt()`.
+    pub text: String,
+    /// Avisos que lleva mostrados esta página. Desde el segundo se ofrece
+    /// impedir más (contra las webs que encadenan avisos para no dejarte salir).
+    pub shown: u32,
+    pub mute: bool,
+}
+
+impl PageDialog {
+    pub fn kind(&self) -> DialogKind {
+        match self.dialog {
+            SimpleDialog::Alert(_) => DialogKind::Alert,
+            SimpleDialog::Confirm(_) => DialogKind::Confirm,
+            SimpleDialog::Prompt(_) => DialogKind::Prompt,
+        }
+    }
+
+    /// Responde a la página: aceptar o cancelar (un `alert()` solo se cierra).
+    fn answer(self, accept: bool) {
+        match self.dialog {
+            SimpleDialog::Alert(alert) => alert.confirm(),
+            SimpleDialog::Confirm(confirm) if accept => confirm.confirm(),
+            SimpleDialog::Confirm(confirm) => confirm.dismiss(),
+            SimpleDialog::Prompt(mut prompt) if accept => {
+                prompt.set_current_value(&self.text);
+                prompt.confirm();
+            },
+            SimpleDialog::Prompt(prompt) => prompt.dismiss(),
+        }
+    }
+}
+
+/// Avisos de una pestaña: cuántos lleva su página y si se silenciaron.
+#[derive(Default)]
+struct DialogPolicy {
+    origin: String,
+    shown: u32,
+    muted: bool,
 }
 
 pub struct Browser {
@@ -122,6 +198,10 @@ pub struct Browser {
     tabs: RefCell<Vec<WebView>>,
     active: Cell<usize>,
     control: RefCell<Option<(WebViewId, PageControl)>>,
+    /// Punto de la página del último clic derecho, para abrir ahí el menú.
+    context_point: Cell<Option<DevicePoint>>,
+    dialogs: RefCell<HashMap<WebViewId, PageDialog>>,
+    dialog_policies: RefCell<HashMap<WebViewId, DialogPolicy>>,
     file_picker: RefCell<Option<FilePicker>>,
     favicon_changes: RefCell<Vec<WebViewId>>,
     page_cursor: Cell<Option<CursorIcon>>,
@@ -166,6 +246,9 @@ impl Browser {
             tabs: RefCell::default(),
             active: Cell::new(0),
             control: RefCell::default(),
+            context_point: Cell::new(None),
+            dialogs: RefCell::default(),
+            dialog_policies: RefCell::default(),
             file_picker: RefCell::default(),
             favicon_changes: RefCell::default(),
             page_cursor: Cell::new(Some(CursorIcon::Default)),
@@ -325,6 +408,9 @@ impl Browser {
             }
             (tabs.remove(index), tabs.len())
         };
+        // Si tenía un aviso abierto, al soltarlo Servo recibe "cancelar".
+        self.dialogs.borrow_mut().remove(&removed.id());
+        self.dialog_policies.borrow_mut().remove(&removed.id());
         drop(removed);
 
         if remaining == 0 {
@@ -515,6 +601,103 @@ impl Browser {
         if let Some(webview) = self.active_webview() {
             *self.control.borrow_mut() = Some((webview.id(), control));
         }
+    }
+
+    /// Recuerda dónde se hizo clic derecho en la página.
+    pub fn note_context_click(&self, point: DevicePoint) {
+        self.context_point.set(Some(point));
+    }
+
+    /// Saca el aviso pendiente de la pestaña activa para dibujarlo.
+    pub fn take_dialog(&self) -> Option<PageDialog> {
+        let id = self.active_webview()?.id();
+        self.dialogs.borrow_mut().remove(&id)
+    }
+
+    pub fn put_back_dialog(&self, dialog: PageDialog) {
+        if let Some(webview) = self.active_webview() {
+            self.dialogs.borrow_mut().insert(webview.id(), dialog);
+        }
+    }
+
+    /// Responde al aviso. Con `mute`, esta página ya no podrá mostrar más.
+    pub fn resolve_dialog(&self, dialog: PageDialog, accept: bool) {
+        if dialog.mute
+            && let Some(webview) = self.active_webview()
+            && let Some(policy) = self.dialog_policies.borrow_mut().get_mut(&webview.id())
+        {
+            policy.muted = true;
+        }
+        dialog.answer(accept);
+        self.window.request_redraw();
+    }
+
+    /// El aviso pendiente de la pestaña activa: tipo, dominio y texto.
+    pub fn active_dialog(&self) -> Option<(DialogKind, String, String)> {
+        let id = self.active_webview()?.id();
+        let dialogs = self.dialogs.borrow();
+        let dialog = dialogs.get(&id)?;
+        Some((dialog.kind(), dialog.origin.clone(), dialog.message.clone()))
+    }
+
+    /// Responde al aviso de la pestaña activa (para el agente, por MCP).
+    pub fn answer_active_dialog(&self, accept: bool, text: Option<&str>) -> bool {
+        let Some(mut dialog) = self.take_dialog() else {
+            return false;
+        };
+        if let Some(text) = text {
+            dialog.text = text.to_owned();
+        }
+        self.resolve_dialog(dialog, accept);
+        true
+    }
+
+    fn show_dialog(&self, webview: &WebView, dialog: SimpleDialog) {
+        let origin = dialog_origin(webview);
+        let shown = {
+            let mut policies = self.dialog_policies.borrow_mut();
+            let policy = policies.entry(webview.id()).or_default();
+            if policy.origin != origin {
+                *policy = DialogPolicy {
+                    origin: origin.clone(),
+                    ..DialogPolicy::default()
+                };
+            }
+            if policy.muted {
+                log::info!("Aviso de página silenciado");
+                PageDialog {
+                    dialog,
+                    origin,
+                    message: String::new(),
+                    text: String::new(),
+                    shown: 0,
+                    mute: true,
+                }
+                .answer(false);
+                return;
+            }
+            policy.shown += 1;
+            policy.shown
+        };
+        let (message, text) = match &dialog {
+            SimpleDialog::Alert(alert) => (alert.message().to_owned(), String::new()),
+            SimpleDialog::Confirm(confirm) => (confirm.message().to_owned(), String::new()),
+            SimpleDialog::Prompt(prompt) => (
+                prompt.message().to_owned(),
+                prompt.current_value().to_owned(),
+            ),
+        };
+        let dialog = PageDialog {
+            dialog,
+            origin,
+            message: sanitize_multiline(&message, DIALOG_MAX_CHARS),
+            text: sanitize(&text, 500),
+            shown,
+            mute: false,
+        };
+        // Si quedaba otro sin responder, al soltarlo Servo recibe "cancelar".
+        self.dialogs.borrow_mut().insert(webview.id(), dialog);
+        self.window.request_redraw();
     }
 
     /// Abre el diálogo del sistema para subir archivos, si una página lo pidió.
@@ -787,23 +970,10 @@ impl WebViewDelegate for Browser {
     fn show_embedder_control(&self, webview: WebView, control: EmbedderControl) {
         log::debug!("La página pide un control: {}", control_kind(&control));
         match control {
-            // alert/confirm/prompt: se muestran en una franja marcada como texto
-            // de la página y se cierran solos. Así una web no puede bloquearte con
-            // diálogos en bucle ("¡Tu PC está infectado!").
-            EmbedderControl::SimpleDialog(dialog) => match dialog {
-                SimpleDialog::Alert(alert) => {
-                    self.show_page_message(alert.message());
-                    alert.confirm();
-                },
-                SimpleDialog::Confirm(confirm) => {
-                    self.show_page_message(confirm.message());
-                    confirm.dismiss();
-                },
-                SimpleDialog::Prompt(prompt) => {
-                    self.show_page_message(prompt.message());
-                    prompt.dismiss();
-                },
-            },
+            // alert/confirm/prompt: un cuadro de Ferrum encima de la página, con
+            // el dominio que lo pide. Solo pausa esa pestaña, y a partir del
+            // segundo aviso se pueden silenciar (contra "¡Tu PC está infectado!").
+            EmbedderControl::SimpleDialog(dialog) => self.show_dialog(&webview, dialog),
             EmbedderControl::SelectElement(select) => {
                 *self.control.borrow_mut() = Some((webview.id(), PageControl::Select(select)));
                 self.window.request_redraw();
@@ -820,6 +990,11 @@ impl WebViewDelegate for Browser {
                 *self.file_picker.borrow_mut() = Some(picker);
             },
             EmbedderControl::FilePicker(picker) => picker.dismiss(),
+            EmbedderControl::ContextMenu(menu) if self.is_active(&webview) => {
+                let at = self.context_point.take();
+                *self.control.borrow_mut() = Some((webview.id(), PageControl::Menu { menu, at }));
+                self.window.request_redraw();
+            },
             EmbedderControl::ContextMenu(menu) => menu.dismiss(),
             EmbedderControl::InputMethod(_) => {},
         }
@@ -862,6 +1037,33 @@ fn initial_viewport_size(window: &Window) -> PhysicalSize<u32> {
     let size = window.inner_size();
     let chrome = ((TAB_BAR_HEIGHT + TOOLBAR_HEIGHT) * window.scale_factor() as f32).round() as u32;
     PhysicalSize::new(size.width.max(1), size.height.saturating_sub(chrome).max(1))
+}
+
+/// Dominio que pide un aviso, tal y como se muestra en el cuadro.
+fn dialog_origin(webview: &WebView) -> String {
+    webview
+        .url()
+        .filter(|url| !pages::is_internal(url))
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .map(|host| sanitize(&host, 80))
+        .unwrap_or_else(|| "Esta página".to_owned())
+}
+
+/// Como [`sanitize`], pero conserva los saltos de línea (hasta 20 líneas).
+fn sanitize_multiline(text: &str, max_chars: usize) -> String {
+    let lines: Vec<String> = text
+        .lines()
+        .take(20)
+        .map(|line| sanitize(&line.replace('\t', " "), max_chars))
+        .collect();
+    let joined = lines.join("\n");
+    let trimmed = joined.trim();
+    if trimmed.chars().count() > max_chars {
+        let cut: String = trimmed.chars().take(max_chars).collect();
+        format!("{cut}…")
+    } else {
+        trimmed.to_owned()
+    }
 }
 
 fn is_loading(webview: &WebView) -> bool {
@@ -966,6 +1168,19 @@ mod tests {
             "Holamoc.knab mundo"
         );
         assert_eq!(sanitize("abcdef", 3), "abc…");
+    }
+
+    #[test]
+    fn dialog_text_keeps_lines_but_not_tricks() {
+        assert_eq!(
+            sanitize_multiline("Hola\u{202E}mundo\nsegunda\tlínea\n", 100),
+            "Holamundo\nsegunda línea"
+        );
+        let long = "a".repeat(50);
+        assert_eq!(
+            sanitize_multiline(&long, 10),
+            format!("{}…", "a".repeat(10))
+        );
     }
 
     #[test]

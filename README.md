@@ -27,7 +27,7 @@ instalan malware. Todo con un consumo de memoria contenido.
 | 🙅 **Permisos denegados** | Cámara, micrófono, ubicación y notificaciones se deniegan sin preguntar. | `browser.rs` |
 | 🪟 **Anti pop-ups** | Una página solo abre ventanas nuevas justo después de un clic tuyo. | `browser.rs` |
 | 🎭 **Anti huella digital** | User-Agent estándar de Servo (igual para todos), núcleos/memoria/pantalla normalizados, sin API de batería, señal *Global Privacy Control*. | `resources/privacy.js` |
-| 🧯 **Diálogos que no secuestran** | `alert()`/`confirm()` se muestran en una franja bajo la barra, marcados como texto de la página, y se cierran solos: adiós a los bucles de "¡tu PC está infectado!". | `browser.rs` |
+| 🧯 **Diálogos que no secuestran** | `alert()`, `confirm()` y `prompt()` salen en un cuadro de Ferrum que dice qué dominio los pide. Solo pausan su pestaña, y desde el segundo aviso puedes impedir que la página muestre más: adiós a los bucles de "¡tu PC está infectado!". | `browser.rs` |
 | 🔤 **Anti suplantación** | La interfaz se dibuja fuera del motor web: ninguna página puede taparla ni imitarla. Los dominios internacionales se muestran en *punycode* y se eliminan caracteres bidi de los títulos, para que `аpple.com` (con "а" cirílica) no pase por `apple.com`. | `gui.rs`, `browser.rs` |
 | 🔐 **Modo estricto** | `--strict` apaga el JIT de JavaScript y WebAssembly (la vía de la mayoría de exploits), aísla cada página en su propio proceso y, en Linux/macOS, lo encierra en un sandbox. | `hardening.rs` |
 
@@ -55,8 +55,8 @@ Ser honestos con lo que **no** hace es parte de la seguridad:
   Media Source Extensions, así que YouTube, Twitch y la mayoría de plataformas
   de streaming no funcionan. Tampoco hay DRM (Netflix, Spotify).
 - **Interfaz sencilla.** Hay pestañas, barra de herramientas, barra de
-  direcciones, listas desplegables, selector de color y subida de archivos. Aún
-  no hay descargas, marcadores, historial ni menú de clic derecho.
+  direcciones, menú de clic derecho, listas desplegables, selector de color y
+  subida de archivos. Aún no hay descargas, marcadores ni historial.
 - **Windows sin sandbox.** En Windows el modo `--multiprocess` separa procesos,
   pero Servo aún no restringe sus privilegios (sí en Linux x86_64 y macOS).
 - **No es un antivirus.** El bloqueo de descargas es por tipo de archivo y las
@@ -132,6 +132,7 @@ navegue con él: abre páginas, las lee, hace clic, escribe y hace capturas.
 | `scroll` | Desplaza con la rueda del ratón |
 | `select_option` | Elige una opción de un `<select>` |
 | `evaluate` | Ejecuta JavaScript en la página |
+| `dialog` | Responde a un `alert()`, `confirm()` o `prompt()` de la página |
 | `history` / `tabs` / `wait` | Atrás, adelante, recargar, pestañas y esperas |
 
 Cómo funciona y por qué es seguro:
@@ -255,7 +256,7 @@ iframes) con la lista de rastreadores, salvo que sean del propio sitio.
 - [x] Web Crypto (`crypto.subtle`) para inicios de sesión y apps cifradas
 - [x] Servidor MCP para que agentes de IA naveguen con Ferrum
 - [x] Reproducción de vídeo y audio (GStreamer; sin MSE todavía)
-- [ ] Menú de clic derecho y diálogos propios
+- [x] Menú de clic derecho y diálogos propios
 - [ ] Panel del escudo: qué se bloqueó y excepciones por sitio
 - [ ] Descargas con cuarentena y verificación
 - [ ] Motor de reglas Adblock completo (`adblock-rust`)
