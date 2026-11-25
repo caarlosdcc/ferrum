@@ -8,22 +8,20 @@
 //! desactivada es código que un atacante ya no puede usar y una señal menos
 //! para identificarte (fingerprinting).
 
-use servo::{Opts, Preferences};
+use servo::{Opts, Preferences, UserAgentPlatform};
 
 use crate::config::Config;
 
-/// User-Agent genérico: el mismo para todos los usuarios de Ferrum en cada
-/// sistema, para no destacar. Es el de Firefox 153 ESR (la misma versión de
-/// SpiderMonkey que usa Servo) sin el token `Servo/x.y.z`, que te haría único.
+/// User-Agent: el estándar de Servo, igual en cada sistema para todos los
+/// navegadores basados en Servo (`… rv:153.0) Servo/0.8.0 Firefox/153.0`).
+///
+/// Ferrum se presentaba antes como Firefox, sin el token `Servo/`, para no
+/// destacar. Pero el motor se distingue igual por cómo se comporta su
+/// JavaScript, y el inicio de sesión de Google rechaza a quien dice ser Firefox
+/// y no lo parece («No se ha podido iniciar sesión: es posible que el navegador
+/// no sea seguro»). Con la identidad honesta, Google pide como mucho un CAPTCHA.
 fn user_agent() -> String {
-    let platform = if cfg!(target_os = "windows") {
-        "Windows NT 10.0; Win64; x64"
-    } else if cfg!(target_os = "macos") {
-        "Macintosh; Intel Mac OS X 10.15"
-    } else {
-        "X11; Linux x86_64"
-    };
-    format!("Mozilla/5.0 ({platform}; rv:153.0) Gecko/20100101 Firefox/153.0")
+    UserAgentPlatform::Desktop.to_user_agent_string()
 }
 
 // Preferences tiene más de 160 campos y varios dependen de la configuración:
@@ -107,4 +105,16 @@ pub fn sandbox_supported() -> bool {
         all(target_os = "linux", target_arch = "x86_64"),
         target_os = "macos"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_agent_is_servo_standard() {
+        let agent = user_agent();
+        assert!(agent.starts_with("Mozilla/5.0 ("));
+        assert!(agent.contains(" Servo/") && agent.contains(" Firefox/"));
+    }
 }

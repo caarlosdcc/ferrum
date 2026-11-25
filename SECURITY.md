@@ -29,7 +29,7 @@ también a Servo siguiendo su [política de seguridad](https://github.com/servo/
 | Abuso de permisos (cámara, micrófono, ubicación, notificaciones) | Denegados siempre |
 | Acceso a archivos locales desde la web | Navegación a `file://` bloqueada; `javascript:`, `data:` y `file:` no se abren desde la barra |
 | Exploits de memoria en el motor | Rust en casi todo Servo; `--strict` apaga el JIT y WebAssembly de SpiderMonkey y aísla el contenido en procesos (con sandbox en Linux x86_64 y macOS) |
-| Fingerprinting | User-Agent común; WebGL, WebGPU, gamepad, batería desactivados; pantalla, núcleos y memoria normalizados |
+| Fingerprinting | User-Agent estándar de Servo, igual para todos; WebGL, WebGPU, gamepad, batería desactivados; pantalla, núcleos y memoria normalizados |
 
 ### Fuera del alcance
 

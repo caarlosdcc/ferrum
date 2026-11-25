@@ -26,7 +26,7 @@ instalan malware. Todo con un consumo de memoria contenido.
 | 📵 **APIs de espionaje apagadas** | WebRTC (filtra tu IP real tras una VPN), geolocalización, notificaciones, Bluetooth, gamepad, WebGL/WebGPU, service workers, lectura del portapapeles. | `hardening.rs` |
 | 🙅 **Permisos denegados** | Cámara, micrófono, ubicación y notificaciones se deniegan sin preguntar. | `browser.rs` |
 | 🪟 **Anti pop-ups** | Una página solo abre ventanas nuevas justo después de un clic tuyo. | `browser.rs` |
-| 🎭 **Anti huella digital** | User-Agent común, núcleos/memoria/pantalla normalizados, sin API de batería, señal *Global Privacy Control*. | `resources/privacy.js` |
+| 🎭 **Anti huella digital** | User-Agent estándar de Servo (igual para todos), núcleos/memoria/pantalla normalizados, sin API de batería, señal *Global Privacy Control*. | `resources/privacy.js` |
 | 🧯 **Diálogos que no secuestran** | `alert()`/`confirm()` se muestran en una franja bajo la barra, marcados como texto de la página, y se cierran solos: adiós a los bucles de "¡tu PC está infectado!". | `browser.rs` |
 | 🔤 **Anti suplantación** | La interfaz se dibuja fuera del motor web: ninguna página puede taparla ni imitarla. Los dominios internacionales se muestran en *punycode* y se eliminan caracteres bidi de los títulos, para que `аpple.com` (con "а" cirílica) no pase por `apple.com`. | `gui.rs`, `browser.rs` |
 | 🔐 **Modo estricto** | `--strict` apaga el JIT de JavaScript y WebAssembly (la vía de la mayoría de exploits), aísla cada página en su propio proceso y, en Linux/macOS, lo encierra en un sandbox. | `hardening.rs` |
