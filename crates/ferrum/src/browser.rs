@@ -36,6 +36,9 @@ use crate::{input, pages};
 /// Script anti-huella digital inyectado en cada página.
 const PRIVACY_SCRIPT: &str = include_str!("../resources/privacy.js");
 
+/// Arreglos de compatibilidad para sitios concretos (lo que a Servo aún le falta).
+const COMPAT_SCRIPT: &str = include_str!("../resources/compat.js");
+
 /// Una página solo puede abrir ventanas nuevas justo después de un clic o una
 /// tecla del usuario. Así se bloquean los pop-ups y pop-unders automáticos.
 const POPUP_GESTURE_WINDOW: Duration = Duration::from_millis(1500);
@@ -229,6 +232,7 @@ impl Browser {
     ) -> Rc<Self> {
         let user_content = Rc::new(UserContentManager::new(&servo));
         user_content.add_script(Rc::new(UserScript::new(PRIVACY_SCRIPT.to_owned(), None)));
+        user_content.add_script(Rc::new(UserScript::new(COMPAT_SCRIPT.to_owned(), None)));
 
         let viewport_size = initial_viewport_size(&window);
         let offscreen = Rc::new(rendering_context.offscreen_context(viewport_size));
