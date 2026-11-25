@@ -11,6 +11,7 @@ exclude = ["third_party"]
 # third_party/epaint/FERRUM.md.
 [patch.crates-io]
 epaint = { path = "third_party/epaint" }
+servo-net = { path = "third_party/servo-net" }
 
 [workspace.package]
 version = "0.1.0"
