@@ -9,6 +9,12 @@ authors.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+# Vídeo y audio (`<video>`, `<audio>`, Web Audio) con GStreamer. Para compilar
+# hace falta GStreamer instalado, y para funcionar, sus bibliotecas junto a
+# ferrum.exe: scripts/build-windows.ps1 hace ambas cosas. Ver README.
+media = ["servo/media-gstreamer"]
+
 [dependencies]
 ferrum-shield.workspace = true
 url.workspace = true
