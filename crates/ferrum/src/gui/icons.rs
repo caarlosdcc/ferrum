@@ -5,7 +5,7 @@
 //! Iconos de la interfaz, dibujados como vectores: nítidos a cualquier escala
 //! y con el mismo grosor de trazo, sin depender de fuentes de emojis.
 
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::{FRAC_1_SQRT_2, PI, TAU};
 
 use egui::epaint::{CubicBezierShape, PathShape, PathStroke};
 use egui::{Color32, CornerRadius, Painter, Pos2, Rect, Shape, Stroke, vec2};
@@ -26,6 +26,13 @@ pub enum Icon {
     Minimize,
     Maximize,
     Restore,
+    Copy,
+    Cut,
+    Paste,
+    Link,
+    Image,
+    OpenNew,
+    SelectAll,
 }
 
 /// Dibuja `icon` centrado en `rect`. Las coordenadas internas van de -1 a 1.
@@ -171,7 +178,110 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 color,
             );
         },
+        Icon::Copy => {
+            painter.rect_stroke(
+                Rect::from_min_max(p(-0.3, -0.38), p(0.72, 0.8)),
+                CornerRadius::same((half * 0.2) as u8),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            line(vec![p(-0.72, 0.38), p(-0.72, -0.8), p(0.32, -0.8)]);
+        },
+        Icon::Cut => {
+            painter.circle_stroke(p(-0.42, 0.56), half * 0.25, stroke);
+            painter.circle_stroke(p(0.42, 0.56), half * 0.25, stroke);
+            line(vec![p(-0.28, 0.36), p(0.42, -0.82)]);
+            line(vec![p(0.28, 0.36), p(-0.42, -0.82)]);
+        },
+        Icon::Paste => {
+            painter.rect_stroke(
+                Rect::from_min_max(p(-0.66, -0.62), p(0.66, 0.84)),
+                CornerRadius::same((half * 0.18) as u8),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.rect_filled(
+                Rect::from_min_max(p(-0.32, -0.86), p(0.32, -0.44)),
+                CornerRadius::same((half * 0.1) as u8),
+                color,
+            );
+            line(vec![p(-0.32, 0.05), p(0.32, 0.05)]);
+            line(vec![p(-0.32, 0.42), p(0.18, 0.42)]);
+        },
+        Icon::Link => {
+            // Dos eslabones de cadena en diagonal.
+            let along = vec2(FRAC_1_SQRT_2, -FRAC_1_SQRT_2);
+            let a = p(-0.24, 0.24);
+            let b = p(0.24, -0.24);
+            painter.add(PathShape::closed_line(
+                capsule(a, along, half * 0.34, half * 0.22),
+                PathStroke::new(width, color),
+            ));
+            painter.add(PathShape::closed_line(
+                capsule(b, along, half * 0.34, half * 0.22),
+                PathStroke::new(width, color),
+            ));
+        },
+        Icon::Image => {
+            painter.rect_stroke(
+                Rect::from_min_max(p(-0.82, -0.66), p(0.82, 0.66)),
+                CornerRadius::same((half * 0.16) as u8),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.circle_filled(p(0.36, -0.26), half * 0.14, color);
+            line(vec![
+                p(-0.82, 0.5),
+                p(-0.26, -0.06),
+                p(0.14, 0.34),
+                p(0.38, 0.12),
+                p(0.82, 0.52),
+            ]);
+        },
+        Icon::OpenNew => {
+            line(vec![
+                p(0.0, -0.72),
+                p(-0.78, -0.72),
+                p(-0.78, 0.78),
+                p(0.72, 0.78),
+                p(0.72, 0.0),
+            ]);
+            line(vec![p(-0.12, 0.12), p(0.8, -0.8)]);
+            line(vec![p(0.24, -0.8), p(0.8, -0.8), p(0.8, -0.24)]);
+        },
+        Icon::SelectAll => {
+            for (x, y) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                line(vec![
+                    p(0.8 * x, 0.35 * y),
+                    p(0.8 * x, 0.8 * y),
+                    p(0.35 * x, 0.8 * y),
+                ]);
+            }
+            line(vec![p(-0.36, -0.2), p(0.36, -0.2)]);
+            line(vec![p(-0.36, 0.2), p(0.16, 0.2)]);
+        },
     }
+}
+
+/// Contorno de una cápsula (rectángulo con extremos redondos) centrada en
+/// `center`, alargada en la dirección `along` (unitaria).
+fn capsule(center: Pos2, along: egui::Vec2, half_length: f32, radius: f32) -> Vec<Pos2> {
+    let angle = along.y.atan2(along.x);
+    let mut points = arc(
+        center + along * half_length,
+        radius,
+        angle - PI / 2.0,
+        angle + PI / 2.0,
+        10,
+    );
+    points.extend(arc(
+        center - along * half_length,
+        radius,
+        angle + PI / 2.0,
+        angle + PI * 1.5,
+        10,
+    ));
+    points
 }
 
 /// Indicador de carga: un arco que gira según `time` (segundos).

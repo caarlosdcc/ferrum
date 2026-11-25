@@ -323,6 +323,9 @@ impl App {
                     ElementState::Released => gui.page_point(self.cursor),
                 };
                 if let Some(point) = point {
+                    if state == ElementState::Pressed && button == MouseButton::Right {
+                        browser.note_context_click(point);
+                    }
                     self.dragging_in_page = state == ElementState::Pressed;
                     if state == ElementState::Pressed {
                         // Clic en la página: la barra de direcciones suelta el foco.

@@ -34,7 +34,7 @@ use servo::{
 };
 
 use self::protocol::{Call, Message, Output};
-use crate::browser::Browser;
+use crate::browser::{Browser, DialogKind};
 use crate::pages;
 
 /// Cuánto se espera a que cargue una página.
@@ -448,6 +448,23 @@ fn tool(browser: &Browser, name: &str, args: &Value) -> Result<Step, String> {
         },
         "evaluate" => run_script(browser, string(args, "script")?.to_owned(), Then::Evaluate)?,
         "tabs" => tabs(browser, args, now)?,
+        "dialog" => {
+            let accept = args
+                .get("accept")
+                .and_then(Value::as_bool)
+                .ok_or("Falta accept.")?;
+            let text = args.get("text").and_then(Value::as_str);
+            let generation = browser.load_generation();
+            if !browser.answer_active_dialog(accept, text) {
+                return Err("La pestaña activa no tiene ningún aviso abierto.".to_owned());
+            }
+            let reply = if accept {
+                "Aviso aceptado."
+            } else {
+                "Aviso cancelado."
+            };
+            settle(now, generation, reply.to_owned())
+        },
         "wait" => {
             let ms = args
                 .get("ms")
@@ -519,6 +536,13 @@ fn settle(now: Instant, generation: u64, prefix: String) -> Step {
 }
 
 fn run_script(browser: &Browser, script: String, then: Then) -> Result<Step, String> {
+    // Con un aviso abierto, la página está en pausa: el script no respondería.
+    if let Some((_, origin, message)) = browser.active_dialog() {
+        return Err(format!(
+            "La página espera respuesta a un aviso de {origin}: «{message}». Respóndelo con la \
+             herramienta dialog."
+        ));
+    }
     let webview = active(browser)?;
     let slot: ScriptSlot = Rc::default();
     let filled = slot.clone();
@@ -812,13 +836,25 @@ fn page_summary(browser: &Browser) -> String {
         .as_ref()
         .map(ToString::to_string)
         .unwrap_or_default();
-    format!(
+    let mut summary = format!(
         "Título: {}\nDirección: {url}\nPestaña {} de {} · {} rastreadores bloqueados en la sesión",
         tab.title,
         active + 1,
         tabs.len(),
         browser.blocked_count()
-    )
+    );
+    if let Some((kind, origin, message)) = browser.active_dialog() {
+        let kind = match kind {
+            DialogKind::Alert => "Aviso",
+            DialogKind::Confirm => "Confirmación",
+            DialogKind::Prompt => "Pregunta con respuesta escrita",
+        };
+        summary.push_str(&format!(
+            "\n{kind} de {origin}: «{message}». La página está en pausa hasta que lo respondas \
+             con la herramienta dialog."
+        ));
+    }
+    summary
 }
 
 fn tab_list(browser: &Browser) -> String {

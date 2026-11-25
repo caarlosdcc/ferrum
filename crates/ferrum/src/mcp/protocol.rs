@@ -245,6 +245,16 @@ fn tools() -> Value {
             &["script"],
         ),
         tool(
+            "dialog",
+            "Responde al aviso de la pestaña activa (alert, confirm o prompt). Mientras no se \
+             responde, la página está en pausa.",
+            json!({
+                "accept": { "type": "boolean", "description": "Aceptar (true) o cancelar (false)" },
+                "text": { "type": "string", "description": "Respuesta escrita, para prompt" },
+            }),
+            &["accept"],
+        ),
+        tool(
             "history",
             "Atrás, adelante o recargar en la pestaña activa, y espera a que cargue.",
             json!({ "action": { "type": "string", "enum": ["back", "forward", "reload"] } }),
