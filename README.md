@@ -51,9 +51,9 @@ Ser honestos con lo que **no** hace es parte de la seguridad:
 - **Compatibilidad.** Servo es un motor joven: algunos sitios complejos se ven
   mal o no funcionan. Mejora cada mes.
 - **Vídeo y audio, con límites.** Con GStreamer se reproducen `<video>` y
-  `<audio>` normales (MP4, WebM, Ogg, MP3…), pero Servo aún no implementa
-  Media Source Extensions, así que YouTube, Twitch y la mayoría de plataformas
-  de streaming no funcionan. Tampoco hay DRM (Netflix, Spotify).
+  `<audio>` normales (MP4, WebM, Ogg, MP3…). Servo aún no implementa Media
+  Source Extensions: YouTube funciona con su formato básico (360p) y Twitch o
+  la mayoría de plataformas de streaming no. Tampoco hay DRM (Netflix, Spotify).
 - **Interfaz sencilla.** Hay pestañas, barra de herramientas, barra de
   direcciones, menú de clic derecho, listas desplegables, selector de color y
   subida de archivos. Aún no hay descargas, marcadores ni historial.
@@ -220,6 +220,7 @@ ferrum/
 │   │       └── domain.rs     Primera parte vs. terceros
 │   └── ferrum/             La aplicación
 │       ├── resources/privacy.js  Script anti-huella inyectado en cada página
+│       ├── resources/compat.js   Arreglos para sitios concretos (lo que le falta a Servo)
 │       └── src/
 │           ├── main.rs       Arranque y procesos de contenido
 │           ├── app.rs        Bucle de la ventana: reparte teclado y ratón

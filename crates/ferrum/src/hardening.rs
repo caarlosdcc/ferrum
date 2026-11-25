@@ -64,6 +64,14 @@ pub fn preferences(config: &Config) -> Preferences {
     prefs.dom_cookiestore_enabled = false;
     prefs.devtools_server_enabled = false; // nunca abrir un puerto de depuración
 
+    // --- Compatibilidad ---
+    // APIs estándar que Servo aún trae apagadas por ser experimentales, pero sin
+    // las que muchas webs no funcionan. Ninguna da acceso nuevo al equipo ni
+    // ayuda a identificarte.
+    // IntersectionObserver: carga diferida de imágenes y listas (YouTube no
+    // muestra resultados sin ella).
+    prefs.dom_intersection_observer_enabled = true;
+
     // --- Modo estricto ---
     if config.strict {
         // Los compiladores JIT de JavaScript concentran la mayoría de exploits
@@ -116,5 +124,12 @@ mod tests {
         let agent = user_agent();
         assert!(agent.starts_with("Mozilla/5.0 ("));
         assert!(agent.contains(" Servo/") && agent.contains(" Firefox/"));
+    }
+
+    #[test]
+    fn common_web_apis_are_on() {
+        let prefs = preferences(&Config::default());
+        assert!(prefs.dom_intersection_observer_enabled);
+        assert!(!prefs.dom_webrtc_enabled && !prefs.dom_geolocation_enabled);
     }
 }
