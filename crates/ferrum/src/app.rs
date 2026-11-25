@@ -156,7 +156,11 @@ impl App {
             Some(url) => browser.open_tab(url),
             None => {
                 browser.open_tab(pages::start_url());
-                gui.focus_address();
+                // Con un agente al mando, la barra no se queda en edición: si
+                // no, seguiría vacía mientras el agente navega.
+                if !config.mcp {
+                    gui.focus_address();
+                }
             },
         }
 
