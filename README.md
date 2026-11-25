@@ -232,7 +232,9 @@ ferrum/
 │           └── input.rs      Traducción de eventos
 ├── scripts/generate-icons.py  Genera el icono del .exe (sin dependencias)
 ├── scripts/install-windows.ps1  Instala Ferrum para tu usuario (y para los agentes)
-└── third_party/epaint/     Copia de epaint (egui) con un arreglo: ver FERRUM.md
+└── third_party/            Copias con un arreglo cada una (ver su FERRUM.md):
+    ├── epaint/             egui: dibujo de letras sin hilos por glifo
+    └── servo-net/          Red de Servo: acepta cabeceras HTTP/2 grandes (YouTube)
 ```
 
 La página se pinta en un búfer aparte y la interfaz la copia debajo de la barra.
