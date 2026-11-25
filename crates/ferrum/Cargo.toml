@@ -47,6 +47,12 @@ egui_glow = { version = "0.37", features = ["winit", "clipboard"] }
 # Diálogo nativo del sistema para subir archivos (`<input type=file>`).
 rfd = "0.18"
 
+# Servidor MCP (`--mcp`): mensajes JSON y capturas en PNG. Servo ya compila las
+# tres, así que no añaden código nuevo al binario; las versiones deben coincidir.
+serde_json = "1"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 [build-dependencies]
 # Icono y datos de versión dentro de ferrum.exe (solo se usa al compilar para Windows).
 embed-resource = "3"

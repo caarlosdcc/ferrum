@@ -54,6 +54,12 @@ también a Servo siguiendo su [política de seguridad](https://github.com/servo/
   mismo volumen de *fuzzing* que Chromium o Firefox.
 - El **script anti-huella** se ejecuta dentro de la página; una web decidida
   puede detectar que los valores están normalizados.
+- Con **`--mcp`**, quien lanzó Ferrum (un agente de IA) lo controla por
+  completo: navega, lee las páginas y ejecuta JavaScript en ellas. El canal es
+  solo la entrada y la salida estándar, sin puertos de red, y la barra muestra
+  la pastilla «Agente» mientras dura. Úsalo solo con agentes en los que confíes,
+  y recuerda que el texto de las páginas que lee puede intentar manipularlo
+  (*prompt injection*).
 
 ## Principios de diseño
 

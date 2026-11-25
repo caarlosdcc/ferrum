@@ -47,6 +47,7 @@ const PAGE_MESSAGE_DURATION: Duration = Duration::from_secs(8);
 pub struct TabInfo {
     pub id: WebViewId,
     pub title: String,
+    pub url: Option<Url>,
     pub loading: bool,
 }
 
@@ -130,6 +131,11 @@ pub struct Browser {
     /// redirigir a la versión con parámetros de rastreo.
     last_cleaned: RefCell<Option<(Url, Instant)>>,
     popups_blocked: Cell<u64>,
+    /// Cambios de dirección o de estado de carga, en cualquier pestaña. Sirve
+    /// para saber si una acción del agente llevó a otra página.
+    load_generation: Cell<u64>,
+    /// `Some` si un agente controla Ferrum por MCP; `true` mientras trabaja.
+    agent: Cell<Option<bool>>,
     exit_requested: Cell<bool>,
 }
 
@@ -167,6 +173,8 @@ impl Browser {
             last_gesture: Cell::new(None),
             last_cleaned: RefCell::default(),
             popups_blocked: Cell::new(0),
+            load_generation: Cell::new(0),
+            agent: Cell::new(None),
             exit_requested: Cell::new(false),
         })
     }
@@ -193,6 +201,24 @@ impl Browser {
 
     pub fn request_exit(&self) {
         self.exit_requested.set(true);
+    }
+
+    pub fn load_generation(&self) -> u64 {
+        self.load_generation.get()
+    }
+
+    fn bump_load_generation(&self) {
+        self.load_generation.set(self.load_generation.get() + 1);
+    }
+
+    pub fn agent(&self) -> Option<bool> {
+        self.agent.get()
+    }
+
+    pub fn set_agent(&self, state: Option<bool>) {
+        if self.agent.replace(state) != state {
+            self.window.request_redraw();
+        }
     }
 
     pub fn search_engine_name(&self) -> &str {
@@ -225,6 +251,18 @@ impl Browser {
             .user_content_manager(self.user_content.clone())
             .build();
         self.add_tab(webview);
+    }
+
+    /// Abre en una pestaña nueva lo que se escribió (dirección o búsqueda).
+    /// Devuelve `false` si no hay nada que abrir.
+    pub fn open_tab_for(&self, input: &str) -> bool {
+        match omnibox::resolve(input, &self.search) {
+            Some(url) => {
+                self.open_tab(url);
+                true
+            },
+            None => false,
+        }
     }
 
     fn add_tab(&self, webview: WebView) {
@@ -330,6 +368,7 @@ impl Browser {
             .map(|webview| TabInfo {
                 id: webview.id(),
                 title: tab_title(webview),
+                url: webview.url(),
                 loading: is_loading(webview),
             })
             .collect()
@@ -418,6 +457,11 @@ impl Browser {
             self.rendering_context.resize(size);
         }
         self.window.request_redraw();
+    }
+
+    /// Tamaño de la zona de la página, en píxeles físicos.
+    pub fn viewport_size(&self) -> PhysicalSize<u32> {
+        self.viewport_size.get()
     }
 
     /// Ajusta las páginas al hueco que deja la interfaz.
@@ -654,6 +698,7 @@ impl WebViewDelegate for Browser {
     }
 
     fn notify_url_changed(&self, webview: WebView, _url: Url) {
+        self.bump_load_generation();
         self.refresh(&webview);
     }
 
@@ -662,6 +707,9 @@ impl WebViewDelegate for Browser {
     }
 
     fn notify_load_status_changed(&self, webview: WebView, status: LoadStatus) {
+        // Una pestaña nueva ya nace en `Started`, sin aviso: por eso cuenta
+        // cualquier cambio, y también los de dirección.
+        self.bump_load_generation();
         if status == LoadStatus::Complete {
             // Solo el dominio, nunca la URL completa, ni siquiera en depuración.
             let host = webview

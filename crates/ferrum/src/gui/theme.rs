@@ -39,6 +39,10 @@ pub const SECURE: Color32 = Color32::from_rgb(0x5c, 0xc4, 0x89);
 pub const SECURE_SOFT: Color32 = Color32::from_rgba_premultiplied(15, 31, 22, 41);
 pub const WARNING: Color32 = Color32::from_rgb(0xf0, 0xb4, 0x4c);
 pub const WARNING_SOFT: Color32 = Color32::from_rgba_premultiplied(38, 29, 12, 41);
+/// Pastilla «Agente»: un azul frío, distinto del óxido de la marca, para que
+/// se note que la ventana la controla un agente de IA.
+pub const AGENT: Color32 = Color32::from_rgb(0x7c, 0xa8, 0xff);
+pub const AGENT_SOFT: Color32 = Color32::from_rgba_premultiplied(20, 27, 41, 41);
 /// Botón de cerrar la ventana bajo el ratón (el rojo de Windows).
 pub const CLOSE_HOVER: Color32 = Color32::from_rgb(0xc4, 0x2b, 0x1c);
 pub const MESSAGE_BG: Color32 = Color32::from_rgb(0x26, 0x20, 0x14);
