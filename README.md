@@ -17,6 +17,7 @@ instalan malware. Todo con un consumo de memoria contenido.
 
 | Protección | Qué hace | Dónde está |
 |---|---|---|
+| 🚯 **Sin anuncios** | EasyList y EasyPrivacy (unas 135 000 reglas de Adblock Plus / uBlock Origin) con el motor de Brave: bloquea anuncios y rastreadores por dirección y oculta los huecos que dejan. En YouTube quita también los anuncios de vídeo. Las listas se descargan y renuevan solas cada día; ocupan unos 6 MB de memoria. | `ferrum-shield/src/rules.rs`, `lists.rs`, `resources/youtube-ads.js` |
 | 🛡 **Bloqueo de rastreadores** | Corta las peticiones de terceros a publicidad, analítica, grabación de sesiones, fingerprinting y criptominería. Ampliable con listas hosts / Adblock. | `ferrum-shield/src/blocklist.rs` |
 | 🔒 **Solo HTTPS** | Toda conexión `http://` se mejora a `https://` dentro del motor (incluidas imágenes y scripts). | `hardening.rs` |
 | 🧹 **Enlaces limpios** | Quita `utm_*`, `fbclid`, `gclid`, `msclkid` y otros 50 identificadores antes de que la petición salga. | `ferrum-shield/src/url_clean.rs` |
@@ -88,6 +89,7 @@ ferrum [OPCIONES] [URL o búsqueda]
 | `--strict` | Sin JIT ni WebAssembly, multiproceso y sandbox donde exista |
 | `--multiprocess` | Aísla el contenido web en procesos separados |
 | `--blocklist <archivo>` | Lista extra de rastreadores (hosts, dominios o `\|\|dominio^`) |
+| `--no-filter-lists` | No descargar EasyList ni EasyPrivacy (sin bloqueo de anuncios) |
 | `--malware-list <archivo>` | Lista de dominios maliciosos (se bloquean siempre) |
 | `--search ddg\|mojeek` | Buscador de la barra (por defecto DuckDuckGo HTML) |
 | `--proxy <url>` | Enviar el tráfico por un proxy HTTP |
@@ -214,6 +216,7 @@ ferrum/
 │   │   │   └── trackers.txt  Lista integrada (edítala con un PR)
 │   │   └── src/
 │   │       ├── blocklist.rs  Dominios y rutas bloqueadas, O(etiquetas) por consulta
+│   │       ├── rules.rs      Reglas de Adblock (EasyList…) con el motor de Brave
 │   │       ├── url_clean.rs  Parámetros de rastreo
 │   │       ├── downloads.rs  Extensiones peligrosas
 │   │       ├── omnibox.rs    Barra de direcciones segura (https por defecto)
@@ -221,6 +224,7 @@ ferrum/
 │   └── ferrum/             La aplicación
 │       ├── resources/privacy.js  Script anti-huella inyectado en cada página
 │       ├── resources/compat.js   Arreglos para sitios concretos (lo que le falta a Servo)
+│       ├── resources/youtube-ads.js  Quita los anuncios de vídeo de YouTube
 │       └── src/
 │           ├── main.rs       Arranque y procesos de contenido
 │           ├── app.rs        Bucle de la ventana: reparte teclado y ratón
@@ -229,6 +233,7 @@ ferrum/
 │           ├── logo.rs       Logotipo dibujado por código (icono de la ventana)
 │           ├── browser.rs    Pestañas + filtro de cada petición de red
 │           ├── hardening.rs  Preferencias endurecidas de Servo
+│           ├── lists.rs      Descarga y caché de EasyList y EasyPrivacy
 │           ├── pages.rs      Páginas internas (inicio, bloqueo)
 │           ├── mcp/          Servidor MCP para agentes de IA (`--mcp`)
 │           └── input.rs      Traducción de eventos
@@ -260,8 +265,8 @@ iframes) con la lista de rastreadores, salvo que sean del propio sitio.
 - [x] Menú de clic derecho y diálogos propios
 - [ ] Panel del escudo: qué se bloqueó y excepciones por sitio
 - [ ] Descargas con cuarentena y verificación
-- [ ] Motor de reglas Adblock completo (`adblock-rust`)
-- [ ] Actualización automática y firmada de listas de bloqueo
+- [x] Motor de reglas Adblock completo (`adblock-rust`), con EasyList y EasyPrivacy
+- [ ] Listas de bloqueo firmadas (ya se actualizan solas cada día)
 - [ ] DNS sobre HTTPS
 - [ ] Contenedores por sitio (cookies aisladas por dominio)
 - [ ] Ruido en canvas y audio contra fingerprinting

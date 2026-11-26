@@ -12,6 +12,12 @@ publish = false
 [dependencies]
 url.workspace = true
 log.workspace = true
+# Motor de reglas de Adblock Plus / uBlock Origin de Brave (MPL-2.0, como
+# Ferrum). Sin `single-thread`: las reglas se compilan en otro hilo.
+adblock = { version = "0.13", default-features = false, features = [
+    "embedded-domain-resolver",
+    "full-regex-handling",
+] }
 
 [lints]
 workspace = true

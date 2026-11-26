@@ -179,6 +179,13 @@ pub fn block_page(url: &Url, reason: &BlockReason) -> String {
             "warn",
             ICON_EYE_OFF,
         ),
+        BlockReason::Ad { .. } => (
+            "Anuncio bloqueado",
+            "Esta dirección sirve anuncios o rastreo según las listas de filtros \
+             (EasyList y EasyPrivacy).",
+            "warn",
+            ICON_EYE_OFF,
+        ),
     };
     format!(
         r#"<!DOCTYPE html>

@@ -29,7 +29,7 @@ use winit::window::{CursorIcon, ResizeDirection, Window, WindowId};
 use crate::browser::Browser;
 use crate::config::Config;
 use crate::gui::{self, Action, Gui};
-use crate::{hardening, input, logo, mcp, pages};
+use crate::{hardening, input, lists, logo, mcp, pages};
 
 /// Píxeles por "línea" de rueda del ratón.
 const LINE_HEIGHT: f32 = 76.0;
@@ -130,6 +130,7 @@ impl App {
 
         let mut gui = Gui::new(event_loop, &window, rendering_context.glow_gl_api())?;
 
+        let lists_waker = waker.clone();
         let servo = ServoBuilder::default()
             .opts(hardening::opts(&config))
             .preferences(hardening::preferences(&config))
@@ -166,6 +167,10 @@ impl App {
 
         if self.mcp.is_some() {
             browser.set_agent(Some(false));
+        }
+        if config.filter_lists {
+            let source = lists::start(config.proxy.clone(), move || lists_waker.wake());
+            browser.set_rules_source(source);
         }
 
         log::info!(
@@ -436,6 +441,8 @@ fn running_after_spin(
     mcp: Option<&mut mcp::Server>,
 ) {
     browser.run_file_picker();
+    browser.poll_rules();
+    browser.run_deferred();
     if let Some(server) = mcp {
         server.poll(browser);
         if server.closed() {
