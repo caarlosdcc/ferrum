@@ -553,7 +553,7 @@ pub async fn main_fetch(
         .request_interceptor
         .lock()
         .await
-        .intercept_request(request, &mut response, &fetch_params.timing_info)
+        .intercept_request(request, &mut response, &fetch_params.timing_info, done_chan)
         .await;
 
     let mut response = match response {
