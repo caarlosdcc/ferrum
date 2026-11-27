@@ -145,6 +145,7 @@ impl App {
             rendering_context,
             shield,
             config.search.clone(),
+            config.mse,
         );
 
         // La URL inicial se pasa al crear la pestaña: cargarla justo después
@@ -423,6 +424,7 @@ impl ApplicationHandler<WakeUp> for App {
             running.screenshot.as_ref().and_then(|shot| shot.due),
             running.screenshot.as_ref().and_then(|shot| shot.click_at),
             self.mcp.as_ref().and_then(mcp::Server::deadline),
+            running.browser.mse_deadline(),
         ]
         .into_iter()
         .flatten()
@@ -443,6 +445,7 @@ fn running_after_spin(
     browser.run_file_picker();
     browser.poll_rules();
     browser.run_deferred();
+    browser.poll_mse();
     if let Some(server) = mcp {
         server.poll(browser);
         if server.closed() {

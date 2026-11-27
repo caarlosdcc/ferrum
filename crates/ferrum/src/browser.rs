@@ -41,6 +41,12 @@ const PRIVACY_SCRIPT: &str = include_str!("../resources/privacy.js");
 /// Arreglos de compatibilidad para sitios concretos (lo que a Servo aún le falta).
 const COMPAT_SCRIPT: &str = include_str!("../resources/compat.js");
 
+/// `MediaSource` y `SourceBuffer` para la página (con `--mse`).
+const MSE_SCRIPT: &str = include_str!("../resources/mse.js");
+
+/// Cada cuánto se recogen los trozos de vídeo que la página deja para Ferrum.
+const MSE_POLL: Duration = Duration::from_millis(40);
+
 /// Quita los anuncios de vídeo de YouTube de las respuestas del reproductor.
 const YOUTUBE_ADS_SCRIPT: &str = include_str!("../resources/youtube-ads.js");
 
@@ -234,6 +240,9 @@ pub struct Browser {
     /// lanzar un script desde sus avisos (ni desde la respuesta de otro), así
     /// que se ejecutan después, en [`Browser::run_deferred`].
     deferred: RefCell<Vec<Deferred>>,
+    /// Flujos MSE abiertos (con `--mse`) y cuándo volver a recoger datos.
+    mse: RefCell<crate::mse::Streams>,
+    mse_poll_at: Cell<Option<Instant>>,
     /// Cambios de dirección o de estado de carga, en cualquier pestaña. Sirve
     /// para saber si una acción del agente llevó a otra página.
     load_generation: Cell<u64>,
@@ -249,6 +258,7 @@ impl Browser {
         rendering_context: Rc<WindowRenderingContext>,
         shield: Shield,
         search: SearchEngine,
+        mse: bool,
     ) -> Rc<Self> {
         let user_content = Rc::new(UserContentManager::new(&servo));
         user_content.add_script(Rc::new(UserScript::new(PRIVACY_SCRIPT.to_owned(), None)));
@@ -257,6 +267,9 @@ impl Browser {
             YOUTUBE_ADS_SCRIPT.to_owned(),
             None,
         )));
+        if mse {
+            user_content.add_script(Rc::new(UserScript::new(MSE_SCRIPT.to_owned(), None)));
+        }
 
         let viewport_size = initial_viewport_size(&window);
         let offscreen = Rc::new(rendering_context.offscreen_context(viewport_size));
@@ -287,6 +300,8 @@ impl Browser {
             rules_source: RefCell::default(),
             cosmetics_done: RefCell::default(),
             deferred: RefCell::default(),
+            mse: RefCell::default(),
+            mse_poll_at: Cell::new(None),
             load_generation: Cell::new(0),
             agent: Cell::new(None),
             exit_requested: Cell::new(false),
@@ -384,6 +399,36 @@ impl Browser {
         if status == LoadStatus::Complete && cosmetics.generic {
             deferred.push(Deferred::Generic(webview.clone(), cosmetics));
         }
+    }
+
+    /// Recoge los trozos de vídeo que las páginas con MSE han dejado para
+    /// Ferrum y los pasa a sus flujos.
+    pub fn poll_mse(&self) {
+        let now = Instant::now();
+        if self.mse_poll_at.get().is_some_and(|at| now < at) {
+            return;
+        }
+        let webviews = self.mse.borrow().webviews();
+        if webviews.is_empty() {
+            self.mse_poll_at.set(None);
+            return;
+        }
+        self.mse_poll_at.set(Some(now + MSE_POLL));
+        let tabs = self.tabs.borrow().clone();
+        for webview in tabs.into_iter().filter(|tab| webviews.contains(&tab.id())) {
+            let me = self.me.clone();
+            let id = webview.id();
+            webview.evaluate_javascript(crate::mse::DRAIN, move |result| {
+                if let (Some(browser), Ok(JSValue::String(json))) = (me.upgrade(), result) {
+                    browser.mse.borrow_mut().receive(id, &json);
+                }
+            });
+        }
+    }
+
+    /// Cuándo hay que volver a recoger datos MSE.
+    pub fn mse_deadline(&self) -> Option<Instant> {
+        self.mse_poll_at.get()
     }
 
     /// Ejecuta los scripts de Ferrum pendientes (fuera de los avisos de Servo).
@@ -520,6 +565,7 @@ impl Browser {
         };
         // Si tenía un aviso abierto, al soltarlo Servo recibe "cancelar".
         self.dialogs.borrow_mut().remove(&removed.id());
+        self.mse.borrow_mut().remove_webview(removed.id());
         self.dialog_policies.borrow_mut().remove(&removed.id());
         drop(removed);
 
@@ -923,6 +969,14 @@ impl Browser {
         let request = load.request();
         let url = request.url.as_url().clone();
 
+        // El `<video>` de una página con MSE pide su flujo (ver `mse.js`).
+        if let Some(token) = crate::mse::stream_token(&url) {
+            let token = token.to_owned();
+            self.mse.borrow_mut().attach(&token, webview.id(), load);
+            self.mse_poll_at.set(Some(Instant::now()));
+            return;
+        }
+
         if request.is_for_main_frame {
             let is_get = request.method == Method::GET;
             self.filter_document(load, url, is_get);
@@ -1007,6 +1061,10 @@ impl WebViewDelegate for Browser {
         // Una pestaña nueva ya nace en `Started`, sin aviso: por eso cuenta
         // cualquier cambio, y también los de dirección.
         self.bump_load_generation();
+        if status == LoadStatus::Started {
+            // La página anterior se va: sus flujos MSE también.
+            self.mse.borrow_mut().remove_webview(webview.id());
+        }
         self.apply_cosmetics(&webview, status);
         if status == LoadStatus::Complete {
             // Solo el dominio, nunca la URL completa, ni siquiera en depuración.

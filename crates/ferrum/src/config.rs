@@ -23,6 +23,8 @@ OPCIONES:
     --multiprocess        Aísla el contenido web en procesos separados.
     --blocklist <ARCHIVO> Carga una lista extra de rastreadores (hosts, dominios
                           o reglas ||dominio^ de Adblock). Repetible.
+    --mse                 Experimental: Media Source Extensions (vídeo en alta
+                          calidad en YouTube y otras webs). Solo MP4 con H.264/AAC.
     --no-filter-lists     No descargar EasyList ni EasyPrivacy (sin bloqueo de
                           anuncios; queda la lista integrada de rastreadores).
     --malware-list <ARCHIVO>
@@ -60,6 +62,8 @@ pub struct Config {
     pub malware_lists: Vec<PathBuf>,
     /// Descargar y aplicar EasyList y EasyPrivacy.
     pub filter_lists: bool,
+    /// Media Source Extensions experimentales.
+    pub mse: bool,
     pub search: SearchEngine,
     pub proxy: Option<String>,
     pub screenshot: Option<PathBuf>,
@@ -103,6 +107,7 @@ impl Config {
                 },
                 "--multiprocess" => config.multiprocess = true,
                 "--no-filter-lists" => config.filter_lists = false,
+                "--mse" => config.mse = true,
                 "--blocklist" => config.blocklists.push(value("--blocklist")?.into()),
                 "--malware-list" => config.malware_lists.push(value("--malware-list")?.into()),
                 "--search" => {
@@ -170,6 +175,7 @@ mod tests {
         assert!(!config.mcp && !config.mcp_relay);
         assert!(config.filter_lists);
         assert!(!run(&["--no-filter-lists"]).filter_lists);
+        assert!(!config.mse && run(&["--mse"]).mse);
         assert_eq!(config.search.name, "DuckDuckGo");
     }
 

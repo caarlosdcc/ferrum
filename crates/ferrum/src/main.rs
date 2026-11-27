@@ -16,6 +16,7 @@ mod input;
 mod lists;
 mod logo;
 mod mcp;
+mod mse;
 mod pages;
 
 use std::process::ExitCode;

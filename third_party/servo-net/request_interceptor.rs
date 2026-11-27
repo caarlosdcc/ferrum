@@ -10,7 +10,9 @@ use net_traits::request::Request;
 use net_traits::response::{Response, ResponseBody};
 use net_traits::{NetworkError, ResourceFetchTimingContainer};
 
+use crate::async_runtime::spawn_task;
 use crate::embedder::NetToEmbedderMsg;
+use crate::fetch::methods::{Data, DoneChannel};
 
 #[derive(Clone)]
 pub struct RequestInterceptor {
@@ -27,7 +29,12 @@ impl RequestInterceptor {
         request: &mut Request,
         response: &mut Option<Response>,
         timing_info: &ResourceFetchTimingContainer,
+        done_chan: &mut DoneChannel,
     ) {
+        // Ferrum: las respuestas de audio y vídeo se entregan a medida que llegan
+        // en vez de esperar al final. Sin esto, un flujo que no termina (las
+        // Media Source Extensions de Ferrum) nunca llegaría al reproductor.
+        let streaming = matches!(request.destination, Destination::Audio | Destination::Video);
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let is_for_main_frame = matches!(request.destination, Destination::Document);
         let web_resource_request = WebResourceRequest {
@@ -60,6 +67,33 @@ impl RequestInterceptor {
                         webresource_response.status_code,
                         webresource_response.status_message,
                     );
+                    if streaming {
+                        *response_override.body.lock() = ResponseBody::Receiving(Vec::new());
+                        let body = response_override.body.clone();
+                        let (data_sender, data_receiver) = tokio::sync::mpsc::unbounded_channel();
+                        *done_chan = Some((data_sender.clone(), data_receiver));
+                        *response = Some(response_override);
+                        spawn_task(async move {
+                            while let Some(message) = receiver.recv().await {
+                                match message {
+                                    WebResourceResponseMsg::SendBodyData(data) => {
+                                        let _ = data_sender.send(Data::Payload(data.into()));
+                                    },
+                                    WebResourceResponseMsg::CancelLoad => {
+                                        let _ = data_sender.send(Data::Cancelled);
+                                        return;
+                                    },
+                                    WebResourceResponseMsg::FinishLoad |
+                                    WebResourceResponseMsg::DoNotIntercept => break,
+                                    WebResourceResponseMsg::Start(_) => {},
+                                }
+                            }
+                            // No se guarda el cuerpo: un flujo de vídeo puede durar horas.
+                            *body.lock() = ResponseBody::Done(Vec::new());
+                            let _ = data_sender.send(Data::Done);
+                        });
+                        return;
+                    }
                     *response = Some(response_override);
                 },
                 WebResourceResponseMsg::SendBodyData(data) => {
