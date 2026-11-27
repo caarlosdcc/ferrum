@@ -9,22 +9,24 @@
 //! equipo. Ahí se decide si se bloquea, se limpia o se deja pasar.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use euclid::Scale;
 use ferrum_shield::omnibox::{self, SearchEngine};
-use ferrum_shield::{Shield, Verdict};
+use ferrum_shield::rules::hiding_css;
+use ferrum_shield::{AdRules, PageCosmetics, ResourceKind, Shield, Verdict};
 use http::header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, REFERRER_POLICY};
 use http::{HeaderMap, HeaderValue, Method, StatusCode};
 use servo::{
     ColorPicker, ConsoleLogLevel, ContextMenu, ContextMenuAction, CreateNewWebViewRequest, Cursor,
     DeviceIndependentPixel, DeviceIntRect, DevicePixel, DevicePoint, EmbedderControl,
-    EmbedderControlId, FilePicker, Image, LoadStatus, NavigationRequest, OffscreenRenderingContext,
-    PermissionRequest, RenderingContext, SelectElement, Servo, SimpleDialog, UserContentManager,
-    UserScript, WebResourceLoad, WebResourceResponse, WebView, WebViewBuilder, WebViewDelegate,
-    WebViewId, WindowRenderingContext,
+    EmbedderControlId, FilePicker, Image, JSValue, LoadStatus, NavigationRequest,
+    OffscreenRenderingContext, PermissionRequest, RenderingContext, SelectElement, Servo,
+    SimpleDialog, UserContentManager, UserScript, WebResourceLoad, WebResourceResponse, WebView,
+    WebViewBuilder, WebViewDelegate, WebViewId, WindowRenderingContext,
 };
 use url::Url;
 use winit::dpi::PhysicalSize;
@@ -38,6 +40,16 @@ const PRIVACY_SCRIPT: &str = include_str!("../resources/privacy.js");
 
 /// Arreglos de compatibilidad para sitios concretos (lo que a Servo aún le falta).
 const COMPAT_SCRIPT: &str = include_str!("../resources/compat.js");
+
+/// Quita los anuncios de vídeo de YouTube de las respuestas del reproductor.
+const YOUTUBE_ADS_SCRIPT: &str = include_str!("../resources/youtube-ads.js");
+
+/// Clases e ids de la página, para las reglas genéricas de ocultación.
+const COLLECT_CLASSES: &str = "(() => { const classes = new Set(), ids = new Set(); \
+    for (const el of document.querySelectorAll('[class],[id]')) { \
+    for (const name of el.classList) classes.add(name); if (el.id) ids.add(el.id); \
+    if (classes.size > 5000) break; } \
+    return JSON.stringify([Array.from(classes), Array.from(ids).slice(0, 3000)]); })()";
 
 /// Una página solo puede abrir ventanas nuevas justo después de un clic o una
 /// tecla del usuario. Así se bloquean los pop-ups y pop-unders automáticos.
@@ -214,6 +226,14 @@ pub struct Browser {
     /// redirigir a la versión con parámetros de rastreo.
     last_cleaned: RefCell<Option<(Url, Instant)>>,
     popups_blocked: Cell<u64>,
+    /// Reglas de las listas de filtros que se preparan en otro hilo.
+    rules_source: RefCell<Option<Receiver<AdRules>>>,
+    /// Pestañas a las que ya se aplicaron los selectores de su sitio en esta carga.
+    cosmetics_done: RefCell<HashSet<WebViewId>>,
+    /// Scripts de Ferrum pendientes de ejecutar en las páginas. Servo no deja
+    /// lanzar un script desde sus avisos (ni desde la respuesta de otro), así
+    /// que se ejecutan después, en [`Browser::run_deferred`].
+    deferred: RefCell<Vec<Deferred>>,
     /// Cambios de dirección o de estado de carga, en cualquier pestaña. Sirve
     /// para saber si una acción del agente llevó a otra página.
     load_generation: Cell<u64>,
@@ -233,6 +253,10 @@ impl Browser {
         let user_content = Rc::new(UserContentManager::new(&servo));
         user_content.add_script(Rc::new(UserScript::new(PRIVACY_SCRIPT.to_owned(), None)));
         user_content.add_script(Rc::new(UserScript::new(COMPAT_SCRIPT.to_owned(), None)));
+        user_content.add_script(Rc::new(UserScript::new(
+            YOUTUBE_ADS_SCRIPT.to_owned(),
+            None,
+        )));
 
         let viewport_size = initial_viewport_size(&window);
         let offscreen = Rc::new(rendering_context.offscreen_context(viewport_size));
@@ -260,6 +284,9 @@ impl Browser {
             last_gesture: Cell::new(None),
             last_cleaned: RefCell::default(),
             popups_blocked: Cell::new(0),
+            rules_source: RefCell::default(),
+            cosmetics_done: RefCell::default(),
+            deferred: RefCell::default(),
             load_generation: Cell::new(0),
             agent: Cell::new(None),
             exit_requested: Cell::new(false),
@@ -310,6 +337,85 @@ impl Browser {
 
     pub fn search_engine_name(&self) -> &str {
         self.search.name
+    }
+
+    /// Recibirá las reglas de las listas de filtros cuando estén listas.
+    pub fn set_rules_source(&self, source: Receiver<AdRules>) {
+        *self.rules_source.borrow_mut() = Some(source);
+    }
+
+    /// Aplica las reglas que hayan llegado (se queda con las más nuevas).
+    pub fn poll_rules(&self) {
+        let latest = {
+            let source = self.rules_source.borrow();
+            let Some(source) = source.as_ref() else {
+                return;
+            };
+            source.try_iter().last()
+        };
+        if let Some(rules) = latest {
+            self.shield.set_rules(rules);
+        }
+    }
+
+    /// Oculta los huecos de anuncios de la página según las listas de filtros:
+    /// al leer la cabecera, los selectores de su sitio; al terminar de cargar,
+    /// también los genéricos que afectan a las clases e ids que usa.
+    fn apply_cosmetics(&self, webview: &WebView, status: LoadStatus) {
+        let id = webview.id();
+        if status == LoadStatus::Started {
+            self.cosmetics_done.borrow_mut().remove(&id);
+            return;
+        }
+        let Some(url) = webview
+            .url()
+            .filter(|url| matches!(url.scheme(), "http" | "https"))
+        else {
+            return;
+        };
+        let Some(cosmetics) = self.shield.page_cosmetics(&url) else {
+            return;
+        };
+        let mut deferred = self.deferred.borrow_mut();
+        if self.cosmetics_done.borrow_mut().insert(id) {
+            let css = hiding_css(&cosmetics.selectors);
+            deferred.push(Deferred::Css(webview.clone(), css));
+        }
+        if status == LoadStatus::Complete && cosmetics.generic {
+            deferred.push(Deferred::Generic(webview.clone(), cosmetics));
+        }
+    }
+
+    /// Ejecuta los scripts de Ferrum pendientes (fuera de los avisos de Servo).
+    pub fn run_deferred(&self) {
+        let pending = std::mem::take(&mut *self.deferred.borrow_mut());
+        for task in pending {
+            match task {
+                Deferred::Css(webview, css) => inject_css(&webview, &css),
+                Deferred::Generic(webview, cosmetics) => {
+                    let me = self.me.clone();
+                    let target = webview.clone();
+                    webview.evaluate_javascript(COLLECT_CLASSES, move |result| {
+                        let (Some(browser), Ok(JSValue::String(json))) = (me.upgrade(), result)
+                        else {
+                            return;
+                        };
+                        let Ok((classes, ids)) =
+                            serde_json::from_str::<(Vec<String>, Vec<String>)>(&json)
+                        else {
+                            return;
+                        };
+                        let selectors =
+                            browser.shield.generic_selectors(&classes, &ids, &cosmetics);
+                        let css = hiding_css(&selectors);
+                        browser
+                            .deferred
+                            .borrow_mut()
+                            .push(Deferred::Css(target, css));
+                    });
+                },
+            }
+        }
     }
 
     pub fn blocked_count(&self) -> u64 {
@@ -831,7 +937,11 @@ impl Browser {
         }
 
         let top_level = webview.url();
-        if let Verdict::Block(reason) = self.shield.check_subresource(&url, top_level.as_ref()) {
+        let kind = resource_kind(request.destination.as_str());
+        if let Verdict::Block(reason) =
+            self.shield
+                .check_subresource(&url, top_level.as_ref(), kind)
+        {
             log::debug!("Bloqueado ({}): {}", reason.code(), reason.detail());
             cancel(load, url);
             self.refresh(webview);
@@ -897,6 +1007,7 @@ impl WebViewDelegate for Browser {
         // Una pestaña nueva ya nace en `Started`, sin aviso: por eso cuenta
         // cualquier cambio, y también los de dirección.
         self.bump_load_generation();
+        self.apply_cosmetics(&webview, status);
         if status == LoadStatus::Complete {
             // Solo el dominio, nunca la URL completa, ni siquiera en depuración.
             let host = webview
@@ -1043,6 +1154,50 @@ fn initial_viewport_size(window: &Window) -> PhysicalSize<u32> {
     PhysicalSize::new(size.width.max(1), size.height.saturating_sub(chrome).max(1))
 }
 
+/// Tipo de recurso para las reglas de las listas (`$script`, `$image`…), a
+/// partir del destino de la petición según Fetch.
+fn resource_kind(destination: &str) -> ResourceKind {
+    match destination {
+        "script" | "worker" | "sharedworker" | "serviceworker" | "audioworklet"
+        | "paintworklet" => ResourceKind::Script,
+        "style" => ResourceKind::Stylesheet,
+        "image" => ResourceKind::Image,
+        "font" => ResourceKind::Font,
+        "audio" | "video" | "track" => ResourceKind::Media,
+        "object" | "embed" => ResourceKind::Object,
+        "iframe" | "frame" => ResourceKind::Subdocument,
+        "report" => ResourceKind::Ping,
+        // fetch() y XMLHttpRequest no tienen destino.
+        "" | "json" => ResourceKind::Xhr,
+        _ => ResourceKind::Other,
+    }
+}
+
+/// Trabajo de Ferrum en una página que espera a [`Browser::run_deferred`].
+enum Deferred {
+    /// Añadir esta hoja de estilo.
+    Css(WebView, String),
+    /// Leer las clases e ids de la página y ocultar lo que digan las reglas
+    /// genéricas.
+    Generic(WebView, PageCosmetics),
+}
+
+/// Añade una hoja de estilo a la página (el texto va como cadena JSON, que
+/// es JavaScript válido: nada del CSS se interpreta como código).
+fn inject_css(webview: &WebView, css: &str) {
+    if css.is_empty() {
+        return;
+    }
+    let Ok(text) = serde_json::to_string(css) else {
+        return;
+    };
+    let script = format!(
+        "(() => {{ const style = document.createElement('style'); style.textContent = {text}; \
+         (document.head || document.documentElement).appendChild(style); }})()"
+    );
+    webview.evaluate_javascript(script, |_| {});
+}
+
 /// Dominio que pide un aviso, tal y como se muestra en el cuadro.
 fn dialog_origin(webview: &WebView) -> String {
     webview
@@ -1172,6 +1327,14 @@ mod tests {
             "Holamoc.knab mundo"
         );
         assert_eq!(sanitize("abcdef", 3), "abc…");
+    }
+
+    #[test]
+    fn destinations_map_to_rule_types() {
+        assert_eq!(resource_kind("script"), ResourceKind::Script);
+        assert_eq!(resource_kind("iframe"), ResourceKind::Subdocument);
+        assert_eq!(resource_kind(""), ResourceKind::Xhr);
+        assert_eq!(resource_kind("manifest"), ResourceKind::Other);
     }
 
     #[test]

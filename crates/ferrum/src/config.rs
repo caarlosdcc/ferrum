@@ -23,6 +23,8 @@ OPCIONES:
     --multiprocess        Aísla el contenido web en procesos separados.
     --blocklist <ARCHIVO> Carga una lista extra de rastreadores (hosts, dominios
                           o reglas ||dominio^ de Adblock). Repetible.
+    --no-filter-lists     No descargar EasyList ni EasyPrivacy (sin bloqueo de
+                          anuncios; queda la lista integrada de rastreadores).
     --malware-list <ARCHIVO>
                           Carga una lista de dominios maliciosos o de phishing.
                           Se bloquean incluso al navegar directamente. Repetible.
@@ -56,6 +58,8 @@ pub struct Config {
     pub multiprocess: bool,
     pub blocklists: Vec<PathBuf>,
     pub malware_lists: Vec<PathBuf>,
+    /// Descargar y aplicar EasyList y EasyPrivacy.
+    pub filter_lists: bool,
     pub search: SearchEngine,
     pub proxy: Option<String>,
     pub screenshot: Option<PathBuf>,
@@ -74,7 +78,10 @@ pub enum ParseOutcome {
 
 impl Config {
     pub fn from_args(args: impl IntoIterator<Item = String>) -> Result<ParseOutcome, String> {
-        let mut config = Config::default();
+        let mut config = Config {
+            filter_lists: true,
+            ..Config::default()
+        };
         let mut args = args.into_iter();
 
         while let Some(arg) = args.next() {
@@ -95,6 +102,7 @@ impl Config {
                     config.multiprocess = true;
                 },
                 "--multiprocess" => config.multiprocess = true,
+                "--no-filter-lists" => config.filter_lists = false,
                 "--blocklist" => config.blocklists.push(value("--blocklist")?.into()),
                 "--malware-list" => config.malware_lists.push(value("--malware-list")?.into()),
                 "--search" => {
@@ -160,6 +168,8 @@ mod tests {
         assert!(config.proxy.is_none());
         assert!(config.screenshot.is_none());
         assert!(!config.mcp && !config.mcp_relay);
+        assert!(config.filter_lists);
+        assert!(!run(&["--no-filter-lists"]).filter_lists);
         assert_eq!(config.search.name, "DuckDuckGo");
     }
 

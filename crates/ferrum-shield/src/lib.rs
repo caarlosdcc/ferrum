@@ -12,6 +12,8 @@
 //!
 //! Piezas principales:
 //! - [`blocklist`]: bloqueo de rastreadores, publicidad y dominios maliciosos.
+//! - [`rules`]: reglas de Adblock Plus y uBlock Origin (EasyList, EasyPrivacy):
+//!   anuncios y rastreadores por dirección, y huecos de anuncios que ocultar.
 //! - [`url_clean`]: elimina parámetros de rastreo (`utm_*`, `fbclid`, `gclid`…).
 //! - [`downloads`]: detecta descargas de ejecutables peligrosos.
 //! - [`omnibox`]: convierte lo que escribe el usuario en una URL segura.
@@ -21,13 +23,15 @@ pub mod blocklist;
 pub mod domain;
 pub mod downloads;
 pub mod omnibox;
+pub mod rules;
 pub mod url_clean;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use url::Url;
 
 pub use crate::blocklist::{Blocklist, Category};
+pub use crate::rules::{AdRules, PageCosmetics, ResourceKind};
 
 /// Configuración del escudo. `Default` es el modo recomendado: máxima
 /// protección sin romper la mayoría de sitios.
@@ -35,6 +39,9 @@ pub use crate::blocklist::{Blocklist, Category};
 pub struct ShieldConfig {
     /// Bloquear peticiones de terceros a rastreadores y publicidad.
     pub block_trackers: bool,
+    /// Aplicar las listas de filtros (EasyList, EasyPrivacy): anuncios y
+    /// rastreadores por dirección y huecos de anuncios ocultos.
+    pub block_ads: bool,
     /// Bloquear la navegación a dominios marcados como maliciosos.
     pub block_malware: bool,
     /// Quitar parámetros de rastreo de las URLs de las páginas.
@@ -47,6 +54,7 @@ impl Default for ShieldConfig {
     fn default() -> Self {
         Self {
             block_trackers: true,
+            block_ads: true,
             block_malware: true,
             strip_tracking_params: true,
             block_dangerous_downloads: true,
@@ -70,6 +78,8 @@ pub enum Verdict {
 pub enum BlockReason {
     /// Rastreador o publicidad de terceros.
     Tracker { domain: String },
+    /// Anuncio o rastreador según las listas de filtros.
+    Ad { domain: String },
     /// Dominio en una lista de malware o phishing.
     Malware { domain: String },
     /// Descarga de un tipo de archivo que puede ejecutar código.
@@ -81,6 +91,7 @@ impl BlockReason {
     pub fn code(&self) -> &'static str {
         match self {
             BlockReason::Tracker { .. } => "rastreador",
+            BlockReason::Ad { .. } => "anuncio",
             BlockReason::Malware { .. } => "malware",
             BlockReason::DangerousDownload { .. } => "descarga",
         }
@@ -89,7 +100,9 @@ impl BlockReason {
     /// Detalle legible (dominio o extensión).
     pub fn detail(&self) -> &str {
         match self {
-            BlockReason::Tracker { domain } | BlockReason::Malware { domain } => domain,
+            BlockReason::Tracker { domain }
+            | BlockReason::Ad { domain }
+            | BlockReason::Malware { domain } => domain,
             BlockReason::DangerousDownload { extension } => extension,
         }
     }
@@ -100,6 +113,7 @@ impl BlockReason {
 #[derive(Debug, Default)]
 pub struct Stats {
     pub trackers_blocked: Cell<u64>,
+    pub ads_blocked: Cell<u64>,
     pub malware_blocked: Cell<u64>,
     pub downloads_blocked: Cell<u64>,
     pub urls_cleaned: Cell<u64>,
@@ -111,6 +125,7 @@ impl Stats {
             Verdict::Allow => return,
             Verdict::Redirect(_) => &self.urls_cleaned,
             Verdict::Block(BlockReason::Tracker { .. }) => &self.trackers_blocked,
+            Verdict::Block(BlockReason::Ad { .. }) => &self.ads_blocked,
             Verdict::Block(BlockReason::Malware { .. }) => &self.malware_blocked,
             Verdict::Block(BlockReason::DangerousDownload { .. }) => &self.downloads_blocked,
         };
@@ -119,7 +134,10 @@ impl Stats {
 
     /// Total de amenazas bloqueadas (sin contar URLs limpiadas).
     pub fn total_blocked(&self) -> u64 {
-        self.trackers_blocked.get() + self.malware_blocked.get() + self.downloads_blocked.get()
+        self.trackers_blocked.get()
+            + self.ads_blocked.get()
+            + self.malware_blocked.get()
+            + self.downloads_blocked.get()
     }
 }
 
@@ -128,6 +146,9 @@ impl Stats {
 pub struct Shield {
     config: ShieldConfig,
     blocklist: Blocklist,
+    /// Listas de filtros. Llegan cuando se han descargado y compilado, así que
+    /// al principio pueden faltar.
+    rules: RefCell<Option<AdRules>>,
     stats: Stats,
 }
 
@@ -137,6 +158,7 @@ impl Shield {
         Self {
             config,
             blocklist: Blocklist::with_builtin(),
+            rules: RefCell::new(None),
             stats: Stats::default(),
         }
     }
@@ -153,6 +175,36 @@ impl Shield {
         &self.stats
     }
 
+    /// Pone (o renueva) las reglas de las listas de filtros.
+    pub fn set_rules(&self, rules: AdRules) {
+        *self.rules.borrow_mut() = Some(rules);
+    }
+
+    /// Qué ocultar en la página `url`, si hay listas cargadas y están activas.
+    pub fn page_cosmetics(&self, url: &Url) -> Option<PageCosmetics> {
+        if !self.config.block_ads {
+            return None;
+        }
+        let rules = self.rules.borrow();
+        Some(rules.as_ref()?.page_cosmetics(url))
+    }
+
+    /// Selectores genéricos para las clases e ids que tiene una página.
+    pub fn generic_selectors(
+        &self,
+        classes: &[String],
+        ids: &[String],
+        cosmetics: &PageCosmetics,
+    ) -> Vec<String> {
+        let rules = self.rules.borrow();
+        match rules.as_ref() {
+            Some(rules) if cosmetics.generic => {
+                rules.generic_selectors(classes, ids, &cosmetics.exceptions)
+            },
+            _ => Vec::new(),
+        }
+    }
+
     /// Decide qué hacer con la carga de un **documento principal** (la página
     /// que el usuario ve en la pestaña, no un iframe).
     pub fn check_document(&self, url: &Url) -> Verdict {
@@ -162,9 +214,24 @@ impl Shield {
     }
 
     /// Decide qué hacer con un **recurso secundario** (script, imagen, iframe,
-    /// fetch…) cargado por la página `top_level`.
-    pub fn check_subresource(&self, url: &Url, top_level: Option<&Url>) -> Verdict {
-        let verdict = self.subresource_verdict(url, top_level);
+    /// fetch…) de tipo `kind`, cargado por la página `top_level`.
+    pub fn check_subresource(
+        &self,
+        url: &Url,
+        top_level: Option<&Url>,
+        kind: ResourceKind,
+    ) -> Verdict {
+        let mut verdict = self.subresource_verdict(url, top_level);
+        if verdict == Verdict::Allow && self.config.block_ads {
+            let rules = self.rules.borrow();
+            if rules
+                .as_ref()
+                .is_some_and(|rules| rules.should_block(url, top_level, kind))
+            {
+                let domain = url.host_str().unwrap_or_default().to_owned();
+                verdict = Verdict::Block(BlockReason::Ad { domain });
+            }
+        }
         self.stats.record(&verdict);
         verdict
     }
@@ -235,6 +302,7 @@ mod tests {
         let verdict = shield.check_subresource(
             &url("https://www.google-analytics.com/g/collect"),
             Some(&page),
+            ResourceKind::Script,
         );
         assert!(matches!(
             verdict,
@@ -247,14 +315,21 @@ mod tests {
     fn allows_first_party_requests() {
         let shield = Shield::new(ShieldConfig::default());
         let page = url("https://www.facebook.com/");
-        let verdict =
-            shield.check_subresource(&url("https://connect.facebook.net/sdk.js"), Some(&page));
+        let verdict = shield.check_subresource(
+            &url("https://connect.facebook.net/sdk.js"),
+            Some(&page),
+            ResourceKind::Script,
+        );
         // facebook.com y facebook.net son sitios distintos para el navegador,
         // así que esto sí es un tercero y debe bloquearse.
         assert!(matches!(verdict, Verdict::Block(_)));
 
         let page = url("https://news.example.com/");
-        let verdict = shield.check_subresource(&url("https://cdn.example.com/app.js"), Some(&page));
+        let verdict = shield.check_subresource(
+            &url("https://cdn.example.com/app.js"),
+            Some(&page),
+            ResourceKind::Script,
+        );
         assert_eq!(verdict, Verdict::Allow);
     }
 
@@ -263,7 +338,11 @@ mod tests {
         let shield = Shield::new(ShieldConfig::default());
         let page = url("https://example.com/");
         assert_eq!(
-            shield.check_subresource(&url("https://cdn.jsdelivr.net/npm/x.js"), Some(&page)),
+            shield.check_subresource(
+                &url("https://cdn.jsdelivr.net/npm/x.js"),
+                Some(&page),
+                ResourceKind::Script
+            ),
             Verdict::Allow
         );
     }
@@ -303,16 +382,40 @@ mod tests {
     }
 
     #[test]
+    fn filter_lists_block_ads_once_loaded() {
+        let shield = Shield::new(ShieldConfig::default());
+        let page = url("https://news.test/");
+        let ad = url("https://cdn.test/adserver/banner.js");
+        assert_eq!(
+            shield.check_subresource(&ad, Some(&page), ResourceKind::Script),
+            Verdict::Allow
+        );
+        shield.set_rules(AdRules::parse(["/adserver/*\nnews.test##.promo"]));
+        assert!(matches!(
+            shield.check_subresource(&ad, Some(&page), ResourceKind::Script),
+            Verdict::Block(BlockReason::Ad { .. })
+        ));
+        assert_eq!(shield.stats().ads_blocked.get(), 1);
+        let cosmetics = shield.page_cosmetics(&page).expect("listas cargadas");
+        assert_eq!(cosmetics.selectors, vec![".promo"]);
+    }
+
+    #[test]
     fn respects_disabled_config() {
         let shield = Shield::new(ShieldConfig {
             block_trackers: false,
+            block_ads: false,
             block_malware: false,
             strip_tracking_params: false,
             block_dangerous_downloads: false,
         });
         let page = url("https://example.com/");
         assert_eq!(
-            shield.check_subresource(&url("https://doubleclick.net/ad.js"), Some(&page)),
+            shield.check_subresource(
+                &url("https://doubleclick.net/ad.js"),
+                Some(&page),
+                ResourceKind::Script
+            ),
             Verdict::Allow
         );
         assert_eq!(

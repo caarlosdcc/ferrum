@@ -13,6 +13,7 @@ mod config;
 mod gui;
 mod hardening;
 mod input;
+mod lists;
 mod logo;
 mod mcp;
 mod pages;

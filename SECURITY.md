@@ -69,8 +69,11 @@ también a Servo siguiendo su [política de seguridad](https://github.com/servo/
 
 1. **Seguro por defecto.** Ninguna protección requiere configuración.
 2. **Mínimo privilegio.** Toda API que no hace falta para leer la web está apagada.
-3. **Cero telemetría.** Ferrum no contacta con ningún servidor propio, nunca.
-4. **Nada en disco.** El estado de navegación vive en memoria.
+3. **Cero telemetría.** Ferrum no contacta con ningún servidor propio, nunca. Lo
+   único que descarga por su cuenta son EasyList y EasyPrivacy, de easylist.to,
+   una vez al día y sin cookies ni identificadores (`--no-filter-lists` lo evita).
+4. **Nada en disco.** El estado de navegación vive en memoria. Solo se guardan
+   las listas de filtros, que no dicen nada de lo que visitas.
 5. **Código auditable.** Sin `unsafe` en el código de Ferrum; las políticas viven
    en `ferrum-shield`, separado del motor y cubierto por tests. El código de
    terceros modificado vive en `third_party/` con sus cambios documentados.

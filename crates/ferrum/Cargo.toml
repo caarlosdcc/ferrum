@@ -59,6 +59,14 @@ serde_json = "1"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+# Descarga de las listas de filtros (EasyList, EasyPrivacy). Usa el cifrado de
+# Ferrum (aws-lc-rs) y las raíces de Mozilla; sin cookies ni nada más.
+ureq = { version = "3", default-features = false, features = [
+    "rustls-no-provider",
+    "rustls-webpki-roots",
+    "gzip",
+] }
+
 [build-dependencies]
 # Icono y datos de versión dentro de ferrum.exe (solo se usa al compilar para Windows).
 embed-resource = "3"
