@@ -214,8 +214,14 @@ fn put_u64(data: &mut [u8], at: usize, value: u64) -> Option<()> {
 /// `timescale` del `moov` nuevo lo que estaba en la del original: la duración
 /// de `tkhd` y las de la lista de edición. Si no, GStreamer cree, por ejemplo,
 /// que una pista de una hora dura veintiuna.
-fn renumber_trak(track: &Track, id: u32, timescale: u32) -> Option<Vec<u8>> {
+///
+/// `skip` (segundos) se salta al principio con la lista de edición: el
+/// reproductor descodifica desde el primer fotograma, que es clave, pero
+/// muestra desde ahí. Así salta al punto exacto, como los navegadores.
+fn renumber_trak(track: &Track, id: u32, timescale: u32, skip: f64) -> Option<Vec<u8>> {
     let from = track.movie_timescale;
+    let skip_media = (skip.max(0.0) * f64::from(track.timescale)).round() as i64;
+    let skip_movie = (skip.max(0.0) * f64::from(timescale)).round() as u64;
     let mut out = track.trak.clone();
     let root = read_box(&out, 0, out.len())?;
     let tkhd = child(&out, &root, b"tkhd")?;
@@ -242,19 +248,60 @@ fn renumber_trak(track: &Track, id: u32, timescale: u32) -> Option<Vec<u8>> {
         let count = u32_at(&out, elst.payload_start() + 4)?;
         let entry = if version == 1 { 20 } else { 12 };
         let mut at = elst.payload_start() + 8;
+        let mut skipped = skip_media == 0;
         for _ in 0..count {
             if at + entry > elst.end {
                 break;
             }
-            if version == 1 {
-                let duration = u64_at(&out, at)?;
-                put_u64(&mut out, at, rescale(duration, from, timescale))?;
+            let wide = version == 1;
+            let mut duration = if wide {
+                rescale(u64_at(&out, at)?, from, timescale)
             } else {
-                let duration = rescale(u64::from(u32_at(&out, at)?), from, timescale);
+                rescale(u64::from(u32_at(&out, at)?), from, timescale)
+            };
+            let media_at = at + if wide { 8 } else { 4 };
+            let media_time = if wide {
+                u64_at(&out, media_at)? as i64
+            } else {
+                i64::from(u32_at(&out, media_at)? as i32)
+            };
+            // La primera edición con contenido (-1 es una edición vacía) empieza
+            // `skip` más tarde.
+            if !skipped && media_time >= 0 {
+                skipped = true;
+                let shifted = media_time + skip_media;
+                if wide {
+                    put_u64(&mut out, media_at, shifted as u64)?;
+                } else {
+                    put_u32(&mut out, media_at, u32::try_from(shifted).ok()?)?;
+                }
+                if duration != 0 {
+                    duration = duration.saturating_sub(skip_movie).max(1);
+                }
+            }
+            if wide {
+                put_u64(&mut out, at, duration)?;
+            } else {
                 put_u32(&mut out, at, duration.min(u64::from(u32::MAX)) as u32)?;
             }
             at += entry;
         }
+    } else if skip_media > 0 {
+        // Sin lista de edición: se añade una, detrás de `tkhd`, que dura hasta
+        // el final (0 en un MP4 fragmentado).
+        let mut elst = vec![1, 0, 0, 0];
+        elst.extend_from_slice(&1u32.to_be_bytes());
+        elst.extend_from_slice(&0u64.to_be_bytes());
+        elst.extend_from_slice(&skip_media.to_be_bytes());
+        elst.extend_from_slice(&0x0001_0000u32.to_be_bytes());
+        let edts = make_box(b"edts", &make_box(b"elst", &elst));
+        if root.start + 8 != root.payload_start() {
+            return None; // tamaño de 64 bits: no se toca
+        }
+        let tkhd = child(&out, &root, b"tkhd")?;
+        out.splice(tkhd.end..tkhd.end, edts);
+        let size = u32::try_from(out.len()).ok()?;
+        put_u32(&mut out, 0, size)?;
     }
     Some(out)
 }
@@ -276,11 +323,13 @@ fn trex_for(track: &Track, id: u32) -> Vec<u8> {
 }
 
 /// Monta un segmento de inicialización con todas las pistas, numeradas desde
-/// 1 en el orden dado. `duration` (segundos) fija la duración del vídeo.
+/// 1 en el orden dado. `duration` (segundos) fija la duración del vídeo y
+/// `skip` lo que se salta al principio (ver `renumber_trak`).
 pub fn build_init(
     tracks: &[&Track],
     ftyp: Option<&[u8]>,
     duration: Option<f64>,
+    skip: f64,
 ) -> Option<Vec<u8>> {
     const TIMESCALE: u32 = 1000;
     let duration_units = duration
@@ -311,7 +360,7 @@ pub fn build_init(
     }
     for (index, track) in tracks.iter().enumerate() {
         let id = u32::try_from(index + 1).ok()?;
-        moov.extend(renumber_trak(track, id, TIMESCALE)?);
+        moov.extend(renumber_trak(track, id, TIMESCALE, skip)?);
         mvex.extend(trex_for(track, id));
     }
     moov.extend(make_box(b"mvex", &mvex));
@@ -384,8 +433,9 @@ pub fn fragment_span(moof: &[u8], track: &Track) -> Option<(f64, f64)> {
 
 /// Copia un fragmento (`moof` + `mdat` seguidos) como pista `id` con número de
 /// secuencia `sequence`. Solo admite fragmentos cuyos datos se cuentan desde
-/// el propio `moof`, que es lo habitual en DASH.
-pub fn renumber_fragment(fragment: &[u8], id: u32, sequence: u32) -> Option<Vec<u8>> {
+/// el propio `moof`, que es lo habitual en DASH. `shift` (en unidades de la
+/// pista) se resta a su tiempo: cada flujo empieza en 0 (ver `mse::Stream`).
+pub fn renumber_fragment(fragment: &[u8], id: u32, sequence: u32, shift: u64) -> Option<Vec<u8>> {
     let mut out = fragment.to_vec();
     let root = read_box(&out, 0, out.len())?;
     let mfhd = child(&out, &root, b"mfhd")?;
@@ -400,8 +450,36 @@ pub fn renumber_fragment(fragment: &[u8], id: u32, sequence: u32) -> Option<Vec<
             return None; // base-data-offset absoluto: no se puede mover
         }
         put_u32(&mut out, tfhd.payload_start() + 4, id)?;
+        // Tiempos desde el inicio del flujo (ver `shift`).
+        if shift > 0 {
+            let tfdt = child(&out, &traf, b"tfdt")?;
+            let at = tfdt.payload_start() + 4;
+            if *out.get(tfdt.payload_start())? == 1 {
+                let base = u64_at(&out, at)?;
+                put_u64(&mut out, at, base.saturating_sub(shift))?;
+            } else {
+                let base = u64::from(u32_at(&out, at)?);
+                put_u32(
+                    &mut out,
+                    at,
+                    u32::try_from(base.saturating_sub(shift)).ok()?,
+                )?;
+            }
+        }
     }
     Some(out)
+}
+
+/// Un trozo de fragmento listo para el reproductor.
+#[derive(Clone, Debug)]
+pub struct Piece {
+    /// Inicio y final, en segundos.
+    pub start: f64,
+    pub end: f64,
+    /// Empieza en un fotograma clave: se puede reproducir desde aquí.
+    pub sync: bool,
+    /// `moof` + `mdat`.
+    pub data: Vec<u8>,
 }
 
 /// Una muestra de un fragmento: duración, tamaño, marcas, desfase de
@@ -422,12 +500,8 @@ struct Sample {
 /// reproductor de Servo (GStreamer con `decodebin3`) tiene colas cortas: si
 /// llegan diez segundos de audio antes del primer cuadro de vídeo, se llena la
 /// del audio y todo se queda esperando. Con trozos pequeños, audio y vídeo van
-/// intercalados. Devuelve `(inicio en segundos, bytes)` de cada trozo.
-pub fn split_fragment(
-    fragment: &[u8],
-    track: &Track,
-    max_seconds: f64,
-) -> Option<Vec<(f64, Vec<u8>)>> {
+/// intercalados.
+pub fn split_fragment(fragment: &[u8], track: &Track, max_seconds: f64) -> Option<Vec<Piece>> {
     let moof = read_box(fragment, 0, fragment.len())?;
     if &moof.kind != b"moof" {
         return None;
@@ -538,10 +612,13 @@ pub fn split_fragment(
             end += 1;
         }
         let chunk = &samples[piece_start..end];
-        pieces.push((
-            time as f64 / f64::from(track.timescale),
-            build_piece(fragment, track.id, time, chunk, trun_version)?,
-        ));
+        pieces.push(Piece {
+            start: time as f64 / f64::from(track.timescale),
+            end: (time + span) as f64 / f64::from(track.timescale),
+            // `sample_is_non_sync_sample`: si está a 0, se puede empezar aquí.
+            sync: &track.handler != b"vide" || chunk[0].flags & 0x0001_0000 == 0,
+            data: build_piece(fragment, track.id, time, chunk, trun_version)?,
+        });
         time += span;
         piece_start = end;
     }
@@ -712,11 +789,16 @@ pub mod tests {
         let frag = fragment_with_samples(1, 2000, 10);
         let pieces = split_fragment(&frag, &track, 0.3).expect("trozos");
         assert_eq!(pieces.len(), 4);
-        let starts: Vec<f64> = pieces.iter().map(|(start, _)| *start).collect();
+        let starts: Vec<f64> = pieces.iter().map(|piece| piece.start).collect();
         assert_eq!(starts, vec![2.0, 2.3, 2.6, 2.9]);
+        assert!((pieces[3].end - 3.0).abs() < 1e-9);
+        assert!(pieces.iter().all(|piece| piece.sync)); // audio: todo es clave
         // Los bytes de las muestras se conservan en orden y cada trozo se lee bien.
         let mut data = Vec::new();
-        for (start, piece) in &pieces {
+        for Piece {
+            start, data: piece, ..
+        } in &pieces
+        {
             let (boxes, used) = boxes_in(piece, 0, piece.len());
             assert_eq!(used, piece.len());
             let moof = &piece[boxes[0].start..boxes[0].end];
@@ -754,10 +836,36 @@ pub mod tests {
         let mut trak = track.trak[8..].to_vec();
         trak.extend(edts);
         track.trak = make_box(b"trak", &trak);
-        let out = renumber_trak(&track, 3, 1000).expect("trak");
+        let out = renumber_trak(&track, 3, 1000, 0.0).expect("trak");
         let root = read_box(&out, 0, out.len()).expect("trak");
         let elst = child(&out, &child(&out, &root, b"edts").expect("edts"), b"elst").expect("elst");
         assert_eq!(u32_at(&out, elst.payload_start() + 8), Some(1000));
+
+        // Saltando 0,25 s: la edición empieza 0,25 s (3840 unidades) más tarde
+        // y dura 250 unidades (de 1000) menos.
+        let out = renumber_trak(&track, 3, 1000, 0.25).expect("trak");
+        let root = read_box(&out, 0, out.len()).expect("trak");
+        let elst = child(&out, &child(&out, &root, b"edts").expect("edts"), b"elst").expect("elst");
+        assert_eq!(u32_at(&out, elst.payload_start() + 8), Some(750));
+        assert_eq!(u32_at(&out, elst.payload_start() + 12), Some(3840));
+    }
+
+    #[test]
+    fn adds_an_edit_list_to_skip_the_start() {
+        let track = parse_init(&init_segment(1, 90_000, b"vide"))
+            .expect("init")
+            .tracks
+            .remove(0);
+        let out = renumber_trak(&track, 1, 1000, 2.0).expect("trak");
+        let root = read_box(&out, 0, out.len()).expect("trak");
+        assert_eq!(root.end, out.len());
+        let edts = child(&out, &root, b"edts").expect("edts");
+        let elst = child(&out, &edts, b"elst").expect("elst");
+        // Versión 1: duración 0 (hasta el final) y empieza a 2 s (180 000).
+        assert_eq!(u64_at(&out, elst.payload_start() + 8), Some(0));
+        assert_eq!(u64_at(&out, elst.payload_start() + 16), Some(180_000));
+        // El resto del trak sigue entero detrás.
+        assert!(child(&out, &root, b"mdia").is_some());
     }
 
     #[test]
@@ -768,6 +876,7 @@ pub mod tests {
             &[&video.tracks[0], &audio.tracks[0]],
             video.ftyp.as_deref(),
             Some(12.5),
+            0.0,
         )
         .expect("init unido");
         let parsed = parse_init(&merged).expect("se vuelve a leer");
@@ -778,7 +887,7 @@ pub mod tests {
         let frag = fragment(1, 0, 4);
         let (boxes, _) = boxes_in(&frag, 0, frag.len());
         assert_eq!(boxes.len(), 2);
-        let out = renumber_fragment(&frag, 2, 42).expect("fragmento");
+        let out = renumber_fragment(&frag, 2, 42, 0).expect("fragmento");
         let root = read_box(&out, 0, out.len()).expect("moof");
         let traf = child(&out, &root, b"traf").expect("traf");
         let tfhd = child(&out, &traf, b"tfhd").expect("tfhd");
@@ -786,5 +895,14 @@ pub mod tests {
         let mfhd = child(&out, &root, b"mfhd").expect("mfhd");
         assert_eq!(u32_at(&out, mfhd.payload_start() + 4), Some(42));
         assert_eq!(out.len(), frag.len());
+
+        // Con desplazamiento, el fragmento empieza antes: 10 s menos 4 s (en la
+        // escala del vídeo, 90 000 por segundo).
+        let late = fragment(1, 900_000, 4);
+        let shifted = renumber_fragment(&late, 1, 1, 360_000).expect("desplazado");
+        let root = read_box(&shifted, 0, shifted.len()).expect("moof");
+        let (from, _) =
+            fragment_span(&shifted[root.start..root.end], &parsed.tracks[0]).expect("tiempos");
+        assert!((from - 6.0).abs() < 1e-9, "{from}");
     }
 }

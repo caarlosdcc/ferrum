@@ -67,6 +67,10 @@ ureq = { version = "3", default-features = false, features = [
     "gzip",
 ] }
 
+[dev-dependencies]
+# Identificadores de prueba de Servo (ya está en el árbol de dependencias).
+servo-base = "0.8"
+
 [build-dependencies]
 # Icono y datos de versión dentro de ferrum.exe (solo se usa al compilar para Windows).
 embed-resource = "3"

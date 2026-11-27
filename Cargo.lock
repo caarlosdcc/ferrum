@@ -2138,6 +2138,7 @@ dependencies = [
  "rustls",
  "serde_json",
  "servo",
+ "servo-base",
  "ureq",
  "url",
  "winit",

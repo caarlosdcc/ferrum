@@ -418,7 +418,8 @@ impl Browser {
         for webview in tabs.into_iter().filter(|tab| webviews.contains(&tab.id())) {
             let me = self.me.clone();
             let id = webview.id();
-            webview.evaluate_javascript(crate::mse::DRAIN, move |result| {
+            let script = self.mse.borrow_mut().drain_script(id);
+            webview.evaluate_javascript(script, move |result| {
                 if let (Some(browser), Ok(JSValue::String(json))) = (me.upgrade(), result) {
                     browser.mse.borrow_mut().receive(id, &json);
                 }
