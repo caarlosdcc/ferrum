@@ -54,7 +54,8 @@ Ser honestos con lo que **no** hace es parte de la seguridad:
 - **Vídeo y audio, con límites.** Con GStreamer se reproducen `<video>` y
   `<audio>` normales (MP4, WebM, Ogg, MP3…). Servo aún no implementa Media
   Source Extensions; Ferrum trae las suyas, experimentales (`--mse`): con ellas
-  YouTube se ve en HD, aún sin saltar a otro punto del vídeo. Sin `--mse`,
+  YouTube se ve en HD y se puede saltar a cualquier punto del vídeo, aunque aún
+  no cambia de calidad a mitad de reproducción. Sin `--mse`,
   YouTube va en 360p y Twitch o la mayoría de plataformas no funcionan. No hay
   DRM (Netflix, Spotify).
 - **Interfaz sencilla.** Hay pestañas, barra de herramientas, barra de
@@ -92,7 +93,7 @@ ferrum [OPCIONES] [URL o búsqueda]
 | `--multiprocess` | Aísla el contenido web en procesos separados |
 | `--blocklist <archivo>` | Lista extra de rastreadores (hosts, dominios o `\|\|dominio^`) |
 | `--no-filter-lists` | No descargar EasyList ni EasyPrivacy (sin bloqueo de anuncios) |
-| `--mse` | Experimental: Media Source Extensions (YouTube en 720p/1080p); ver abajo |
+| `--mse` | Experimental: Media Source Extensions (YouTube en 720p/1080p, con saltos); ver [Limitaciones](#limitaciones) |
 | `--malware-list <archivo>` | Lista de dominios maliciosos (se bloquean siempre) |
 | `--search ddg\|mojeek` | Buscador de la barra (por defecto DuckDuckGo HTML) |
 | `--proxy <url>` | Enviar el tráfico por un proxy HTTP |
@@ -266,7 +267,9 @@ iframes) con la lista de rastreadores, salvo que sean del propio sitio.
 - [x] Desplegables `<select>`, selector de color y subida de archivos
 - [x] Web Crypto (`crypto.subtle`) para inicios de sesión y apps cifradas
 - [x] Servidor MCP para que agentes de IA naveguen con Ferrum
-- [x] Reproducción de vídeo y audio (GStreamer; sin MSE todavía)
+- [x] Reproducción de vídeo y audio (GStreamer)
+- [x] Media Source Extensions experimentales (`--mse`): YouTube en HD con saltos
+- [ ] MSE por defecto: cambio de calidad a mitad del vídeo
 - [x] Menú de clic derecho y diálogos propios
 - [ ] Panel del escudo: qué se bloqueó y excepciones por sitio
 - [ ] Descargas con cuarentena y verificación
