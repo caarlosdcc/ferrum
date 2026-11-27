@@ -478,6 +478,9 @@ pub struct Piece {
     pub end: f64,
     /// Empieza en un fotograma clave: se puede reproducir desde aquí.
     pub sync: bool,
+    /// Con qué segmento de inicio (calidad) va, de los que ha mandado la
+    /// página a esa pista; lo pone quien lo guarda.
+    pub init: usize,
     /// `moof` + `mdat`.
     pub data: Vec<u8>,
 }
@@ -617,6 +620,7 @@ pub fn split_fragment(fragment: &[u8], track: &Track, max_seconds: f64) -> Optio
             end: (time + span) as f64 / f64::from(track.timescale),
             // `sample_is_non_sync_sample`: si está a 0, se puede empezar aquí.
             sync: &track.handler != b"vide" || chunk[0].flags & 0x0001_0000 == 0,
+            init: 0,
             data: build_piece(fragment, track.id, time, chunk, trun_version)?,
         });
         time += span;

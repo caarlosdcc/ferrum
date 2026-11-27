@@ -8,7 +8,7 @@
 // separado, en MP4 fragmentado) se guarda para Ferrum, que lo une en un solo
 // MP4 y lo sirve en una dirección interna que se pone en el `<video>`. Solo
 // admite MP4 con H.264 y AAC: así las webs eligen formatos que GStreamer y
-// esta unión saben tratar. Experimental: solo con `ferrum --mse`.
+// esta unión saben tratar. Activas por defecto; `ferrum --no-mse` las quita.
 //
 // Ferrum guarda lo que la página añade, como haría el navegador, hasta que
 // la página lo quita (`remove()`) o, si ocupa demasiado, lo tira y lo dice al

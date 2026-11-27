@@ -23,8 +23,9 @@ OPCIONES:
     --multiprocess        Aísla el contenido web en procesos separados.
     --blocklist <ARCHIVO> Carga una lista extra de rastreadores (hosts, dominios
                           o reglas ||dominio^ de Adblock). Repetible.
-    --mse                 Experimental: Media Source Extensions (vídeo en alta
-                          calidad en YouTube y otras webs). Solo MP4 con H.264/AAC.
+    --no-mse              Sin Media Source Extensions: las webs de vídeo usan su
+                          formato básico (YouTube en 360p). Por defecto están
+                          activas (vídeo en HD; solo MP4 con H.264/AAC).
     --no-filter-lists     No descargar EasyList ni EasyPrivacy (sin bloqueo de
                           anuncios; queda la lista integrada de rastreadores).
     --malware-list <ARCHIVO>
@@ -62,7 +63,8 @@ pub struct Config {
     pub malware_lists: Vec<PathBuf>,
     /// Descargar y aplicar EasyList y EasyPrivacy.
     pub filter_lists: bool,
-    /// Media Source Extensions experimentales.
+    /// Media Source Extensions (`--no-mse` las quita). Sin el reproductor de
+    /// vídeo (compilado sin `media`) no sirven de nada.
     pub mse: bool,
     pub search: SearchEngine,
     pub proxy: Option<String>,
@@ -84,6 +86,7 @@ impl Config {
     pub fn from_args(args: impl IntoIterator<Item = String>) -> Result<ParseOutcome, String> {
         let mut config = Config {
             filter_lists: true,
+            mse: cfg!(feature = "media"),
             ..Config::default()
         };
         let mut args = args.into_iter();
@@ -107,7 +110,9 @@ impl Config {
                 },
                 "--multiprocess" => config.multiprocess = true,
                 "--no-filter-lists" => config.filter_lists = false,
-                "--mse" => config.mse = true,
+                "--no-mse" => config.mse = false,
+                // Antes eran opcionales; se acepta para no romper accesos directos.
+                "--mse" => config.mse = cfg!(feature = "media"),
                 "--blocklist" => config.blocklists.push(value("--blocklist")?.into()),
                 "--malware-list" => config.malware_lists.push(value("--malware-list")?.into()),
                 "--search" => {
@@ -175,7 +180,8 @@ mod tests {
         assert!(!config.mcp && !config.mcp_relay);
         assert!(config.filter_lists);
         assert!(!run(&["--no-filter-lists"]).filter_lists);
-        assert!(!config.mse && run(&["--mse"]).mse);
+        assert_eq!(config.mse, cfg!(feature = "media"));
+        assert!(!run(&["--no-mse"]).mse);
         assert_eq!(config.search.name, "DuckDuckGo");
     }
 

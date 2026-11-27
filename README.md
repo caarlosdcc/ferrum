@@ -53,9 +53,8 @@ Ser honestos con lo que **no** hace es parte de la seguridad:
   mal o no funcionan. Mejora cada mes.
 - **Vídeo y audio, con límites.** Con GStreamer se reproducen `<video>` y
   `<audio>` normales (MP4, WebM, Ogg, MP3…). Servo aún no implementa Media
-  Source Extensions; Ferrum trae las suyas, experimentales (`--mse`): con ellas
-  YouTube se ve en HD y se puede saltar a cualquier punto del vídeo, aunque aún
-  no cambia de calidad a mitad de reproducción. Sin `--mse`,
+  Source Extensions; Ferrum trae las suyas (solo MP4 con H.264/AAC): YouTube se
+  ve en HD, con saltos y cambios de calidad. Con `--no-mse`,
   YouTube va en 360p y Twitch o la mayoría de plataformas no funcionan. No hay
   DRM (Netflix, Spotify).
 - **Interfaz sencilla.** Hay pestañas, barra de herramientas, barra de
@@ -93,7 +92,7 @@ ferrum [OPCIONES] [URL o búsqueda]
 | `--multiprocess` | Aísla el contenido web en procesos separados |
 | `--blocklist <archivo>` | Lista extra de rastreadores (hosts, dominios o `\|\|dominio^`) |
 | `--no-filter-lists` | No descargar EasyList ni EasyPrivacy (sin bloqueo de anuncios) |
-| `--mse` | Experimental: Media Source Extensions (YouTube en 720p/1080p, con saltos); ver [Limitaciones](#limitaciones) |
+| `--no-mse` | Sin Media Source Extensions (YouTube en 360p); ver [Limitaciones](#limitaciones) |
 | `--malware-list <archivo>` | Lista de dominios maliciosos (se bloquean siempre) |
 | `--search ddg\|mojeek` | Buscador de la barra (por defecto DuckDuckGo HTML) |
 | `--proxy <url>` | Enviar el tráfico por un proxy HTTP |
@@ -229,7 +228,7 @@ ferrum/
 │       ├── resources/privacy.js  Script anti-huella inyectado en cada página
 │       ├── resources/compat.js   Arreglos para sitios concretos (lo que le falta a Servo)
 │       ├── resources/youtube-ads.js  Quita los anuncios de vídeo de YouTube
-│       ├── resources/mse.js      MediaSource y SourceBuffer para las páginas (`--mse`)
+│       ├── resources/mse.js      MediaSource y SourceBuffer para las páginas
 │       └── src/
 │           ├── main.rs       Arranque y procesos de contenido
 │           ├── app.rs        Bucle de la ventana: reparte teclado y ratón
@@ -241,7 +240,7 @@ ferrum/
 │           ├── lists.rs      Descarga y caché de EasyList y EasyPrivacy
 │           ├── pages.rs      Páginas internas (inicio, bloqueo)
 │           ├── mcp/          Servidor MCP para agentes de IA (`--mcp`)
-│           ├── mse/          Media Source Extensions (`--mse`): une las pistas MP4
+│           ├── mse/          Media Source Extensions: une las pistas MP4
 │           └── input.rs      Traducción de eventos
 ├── scripts/generate-icons.py  Genera el icono del .exe (sin dependencias)
 ├── scripts/install-windows.ps1  Instala Ferrum para tu usuario (y para los agentes)
@@ -268,8 +267,7 @@ iframes) con la lista de rastreadores, salvo que sean del propio sitio.
 - [x] Web Crypto (`crypto.subtle`) para inicios de sesión y apps cifradas
 - [x] Servidor MCP para que agentes de IA naveguen con Ferrum
 - [x] Reproducción de vídeo y audio (GStreamer)
-- [x] Media Source Extensions experimentales (`--mse`): YouTube en HD con saltos
-- [ ] MSE por defecto: cambio de calidad a mitad del vídeo
+- [x] Media Source Extensions: YouTube en HD con saltos y cambios de calidad
 - [x] Menú de clic derecho y diálogos propios
 - [ ] Panel del escudo: qué se bloqueó y excepciones por sitio
 - [ ] Descargas con cuarentena y verificación

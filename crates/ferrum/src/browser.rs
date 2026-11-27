@@ -41,7 +41,7 @@ const PRIVACY_SCRIPT: &str = include_str!("../resources/privacy.js");
 /// Arreglos de compatibilidad para sitios concretos (lo que a Servo aún le falta).
 const COMPAT_SCRIPT: &str = include_str!("../resources/compat.js");
 
-/// `MediaSource` y `SourceBuffer` para la página (con `--mse`).
+/// `MediaSource` y `SourceBuffer` para la página (salvo con `--no-mse`).
 const MSE_SCRIPT: &str = include_str!("../resources/mse.js");
 
 /// Cada cuánto se recogen los trozos de vídeo que la página deja para Ferrum.
@@ -240,7 +240,7 @@ pub struct Browser {
     /// lanzar un script desde sus avisos (ni desde la respuesta de otro), así
     /// que se ejecutan después, en [`Browser::run_deferred`].
     deferred: RefCell<Vec<Deferred>>,
-    /// Flujos MSE abiertos (con `--mse`) y cuándo volver a recoger datos.
+    /// Flujos MSE abiertos y cuándo volver a recoger datos.
     mse: RefCell<crate::mse::Streams>,
     mse_poll_at: Cell<Option<Instant>>,
     /// Cambios de dirección o de estado de carga, en cualquier pestaña. Sirve

@@ -5,7 +5,7 @@
 //! Media Source Extensions (MSE) para Servo, que aún no las tiene. Sin ellas,
 //! YouTube y casi todas las plataformas de vídeo se quedan en su formato básico.
 //!
-//! Experimental (`--mse`). Va en tres piezas:
+//! Activas por defecto (`--no-mse` las quita). Van en tres piezas:
 //!
 //! 1. En la página, `resources/mse.js` da `MediaSource` y `SourceBuffer`: guarda
 //!    lo que la web añade (vídeo y audio por separado, en MP4 fragmentado) y
@@ -24,6 +24,11 @@
 //! edición para que se vea desde el punto exacto. Cada flujo empieza en el
 //! segundo 0 (si no, GStreamer esperaría todo ese tiempo antes de avanzar) y
 //! la página suma el desfase, que Ferrum le dice al recoger.
+//!
+//! Para cambiar de calidad, la página manda otro segmento de inicio a la misma
+//! pista. Ferrum los guarda todos y, cuando toca enviar un trozo de otra
+//! calidad, manda antes una cabecera nueva, como en DASH: el reproductor
+//! cambia de resolución sin cortarse.
 
 pub mod mp4;
 
@@ -90,6 +95,8 @@ struct Stream {
     header_sent: bool,
     sequence: u32,
     ended: bool,
+    /// Segmento de inicio de cada pista en la última cabecera enviada.
+    header_inits: Vec<usize>,
     /// Ya se mandó todo y se cerró la respuesta. Se guarda por si la página
     /// salta hacia atrás (se libera con `close` o al cambiar de página).
     closed: bool,
@@ -110,7 +117,11 @@ struct Buffer {
     /// Bytes que aún no forman cajas completas.
     pending: Vec<u8>,
     ftyp: Option<Vec<u8>>,
-    track: Option<Track>,
+    /// Segmentos de inicio distintos que ha mandado la página (una por
+    /// calidad); cada trozo dice con cuál va (`Piece::init`)…
+    inits: Vec<Track>,
+    /// …y el último, con el que van los que lleguen.
+    current: Option<usize>,
     /// Todo lo que la página añadió y sigue teniendo, en orden de tiempo.
     pieces: Vec<Piece>,
     /// En el flujo actual: inicio del primer trozo (el corte)…
@@ -151,6 +162,21 @@ fn keyframe_before(pieces: &[Piece], from: f64) -> Option<f64> {
 }
 
 impl Buffer {
+    /// Pista del último segmento de inicio.
+    fn track(&self) -> Option<&Track> {
+        self.current.and_then(|current| self.inits.get(current))
+    }
+
+    /// Nuevo segmento de inicio: si ya se tenía (la página vuelve a una
+    /// calidad), se reutiliza.
+    fn set_init(&mut self, track: Track) {
+        let found = self.inits.iter().position(|known| *known == track);
+        self.current = Some(found.unwrap_or_else(|| {
+            self.inits.push(track);
+            self.inits.len() - 1
+        }));
+    }
+
     /// Añade un trozo. Lo nuevo sustituye a lo que hubiera en ese tramo.
     fn insert(&mut self, piece: Piece) {
         self.pieces
@@ -420,6 +446,7 @@ impl Stream {
             header_sent: false,
             sequence: 1,
             ended: false,
+            header_inits: Vec::new(),
             closed: false,
             target: None,
             started: false,
@@ -453,7 +480,7 @@ impl Stream {
             return true;
         }
         // Hace falta saber qué pista es el vídeo.
-        if self.buffers.values().any(|buffer| buffer.track.is_none()) {
+        if self.buffers.values().any(|buffer| buffer.track().is_none()) {
             return false;
         }
         let target = match self.target {
@@ -483,8 +510,7 @@ impl Stream {
         };
         let is_video = |buffer: &Buffer| {
             buffer
-                .track
-                .as_ref()
+                .track()
                 .is_some_and(|track| &track.handler == b"vide")
         };
         let anchor = self
@@ -590,8 +616,9 @@ impl Stream {
                         init.extend_from_slice(ftyp);
                     }
                     init.extend_from_slice(&pending[item.start..item.end]);
-                    match mp4::parse_init(&init) {
-                        Some(parsed) => buffer.track = parsed.tracks.into_iter().next(),
+                    match mp4::parse_init(&init).and_then(|parsed| parsed.tracks.into_iter().next())
+                    {
+                        Some(track) => buffer.set_init(track),
                         None => log::warn!("Segmento de inicialización MSE no válido"),
                     }
                     used = item.end;
@@ -603,21 +630,20 @@ impl Stream {
                     Some(next) if &next.kind == b"mdat" => {
                         let fragment = &pending[item.start..next.end];
                         let pieces = buffer
-                            .track
-                            .as_ref()
+                            .track()
                             .and_then(|track| mp4::split_fragment(fragment, track, PIECE_SECONDS));
+                        let init = buffer.current.unwrap_or(0);
                         match pieces {
                             Some(pieces) => {
                                 for piece in pieces {
-                                    buffer.insert(piece);
+                                    buffer.insert(Piece { init, ..piece });
                                 }
                             },
                             // Sin partir (formato raro): entero.
                             None => {
                                 log::debug!("Fragmento MSE sin partir");
                                 let (start, end) = buffer
-                                    .track
-                                    .as_ref()
+                                    .track()
                                     .and_then(|track| {
                                         mp4::fragment_span(&pending[item.start..item.end], track)
                                     })
@@ -626,6 +652,7 @@ impl Stream {
                                     start,
                                     end,
                                     sync: true,
+                                    init,
                                     data: fragment.to_vec(),
                                 });
                             },
@@ -645,8 +672,36 @@ impl Stream {
             "MSE: búfer {index}: {} trozos, {} bytes a medias, inicio: {}",
             buffer.pieces.len(),
             buffer.pending.len(),
-            buffer.track.is_some()
+            buffer.track().is_some()
         );
+    }
+
+    /// Manda la cabecera con el segmento de inicio de `header_inits` en cada
+    /// pista.
+    fn send_header(&mut self) -> bool {
+        let tracks: Option<Vec<&Track>> = self
+            .buffers
+            .values()
+            .zip(&self.header_inits)
+            .map(|(buffer, init)| buffer.inits.get(*init))
+            .collect();
+        let Some(tracks) = tracks.filter(|tracks| tracks.len() == self.buffers.len()) else {
+            return false;
+        };
+        let ftyp = self
+            .buffers
+            .values()
+            .find_map(|buffer| buffer.ftyp.as_deref());
+        let duration = self.duration.map(|duration| duration - self.offset);
+        match mp4::build_init(&tracks, ftyp, duration, self.skip) {
+            Some(init) => {
+                log::info!("MSE: cabecera con {} pistas", tracks.len());
+                self.outbox.extend(init);
+                self.header_sent = true;
+                true
+            },
+            None => false,
+        }
     }
 
     /// Monta lo que se pueda: primero el `moov` con todas las pistas, después
@@ -657,26 +712,20 @@ impl Stream {
             return;
         }
         if !self.header_sent {
-            let tracks: Option<Vec<&Track>> = self
+            // Con la calidad del primer trozo de cada pista.
+            self.header_inits = self
                 .buffers
                 .values()
-                .map(|buffer| buffer.track.as_ref())
+                .map(|buffer| {
+                    buffer
+                        .next()
+                        .map(|at| buffer.pieces[at].init)
+                        .or(buffer.current)
+                        .unwrap_or(0)
+                })
                 .collect();
-            let Some(tracks) = tracks else {
-                return; // falta el inicio de alguna pista
-            };
-            let ftyp = self
-                .buffers
-                .values()
-                .find_map(|buffer| buffer.ftyp.as_deref());
-            let duration = self.duration.map(|duration| duration - self.offset);
-            match mp4::build_init(&tracks, ftyp, duration, self.skip) {
-                Some(init) => {
-                    log::info!("MSE: {} pistas unidas", tracks.len());
-                    self.outbox.extend(init);
-                    self.header_sent = true;
-                },
-                None => return,
+            if !self.send_header() {
+                return;
             }
         }
         loop {
@@ -698,13 +747,31 @@ impl Stream {
             let Some((position, at, _)) = pick else {
                 break;
             };
+            // Otra calidad: antes, una cabecera con su segmento de inicio.
+            let init = self
+                .buffers
+                .values()
+                .nth(position)
+                .map_or(0, |buffer| buffer.pieces[at].init);
+            if self.header_inits.get(position) != Some(&init) {
+                if let Some(slot) = self.header_inits.get_mut(position) {
+                    *slot = init;
+                }
+                log::info!("MSE: pista {position}: cambio de calidad");
+                if !self.send_header() {
+                    break;
+                }
+            }
             let Some(buffer) = self.buffers.values_mut().nth(position) else {
                 break;
             };
             let piece = &buffer.pieces[at];
             buffer.last = Some((piece.start, piece.end));
             let track_id = u32::try_from(position + 1).unwrap_or(1);
-            let timescale = buffer.track.as_ref().map_or(1, |track| track.timescale);
+            let timescale = buffer
+                .inits
+                .get(piece.init)
+                .map_or(1, |track| track.timescale);
             let shift = (self.offset * f64::from(timescale)).round() as u64;
             match mp4::renumber_fragment(&piece.data, track_id, self.sequence, shift) {
                 Some(bytes) => {
@@ -754,6 +821,7 @@ mod tests {
             start,
             end: start + 0.5,
             sync,
+            init: 0,
             data: vec![0; 10],
         }
     }
@@ -770,7 +838,9 @@ mod tests {
     fn track_with(handler: &[u8; 4], pieces: &[(f64, bool)]) -> Buffer {
         let mut buffer = buffer_with(pieces);
         let init = mp4::tests::init_segment(1, 1000, handler);
-        buffer.track = mp4::parse_init(&init).map(|init| init.tracks[0].clone());
+        if let Some(init) = mp4::parse_init(&init) {
+            buffer.set_init(init.tracks[0].clone());
+        }
         buffer
     }
 
@@ -901,6 +971,20 @@ mod tests {
         let evicted = stream.evict(15);
         assert_eq!(evicted, vec![(0, 0.0, 0.5), (0, 0.5, 1.0)]);
         assert_eq!(starts(&stream.buffers[&0]), vec![1.0, 1.5]);
+    }
+
+    #[test]
+    fn remembers_each_quality_once() {
+        let low = mp4::parse_init(&mp4::tests::init_segment(1, 1000, b"vide")).expect("baja");
+        let high = mp4::parse_init(&mp4::tests::init_segment(1, 90_000, b"vide")).expect("alta");
+        let mut buffer = Buffer::default();
+        buffer.set_init(low.tracks[0].clone());
+        buffer.set_init(high.tracks[0].clone());
+        assert_eq!(buffer.current, Some(1));
+        // Vuelve a la primera: no se guarda dos veces.
+        buffer.set_init(low.tracks[0].clone());
+        assert_eq!(buffer.current, Some(0));
+        assert_eq!(buffer.inits.len(), 2);
     }
 
     #[test]
